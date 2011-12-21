@@ -1,0 +1,26 @@
+From 081656c7c24c0c643ff6466d087b7365fdb15260 Mon Sep 17 00:00:00 2001
+From: Vivek Natarajan <nataraja@qca.qualcomm.com>
+Date: Sun, 18 Dec 2011 05:40:03 +0530
+Subject: [PATCH] ath6kl: Set ath6kl_p2p for dynamic mode switching.
+
+Signed-off-by: Vivek Natarajan <nataraja@qca.qualcomm.com>
+---
+ drivers/net/wireless/ath/ath6kl/cfg80211.c |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/drivers/net/wireless/ath/ath6kl/cfg80211.c b/drivers/net/wireless/ath/ath6kl/cfg80211.c
+index 261303c..4e6fd47 100644
+--- a/drivers/net/wireless/ath/ath6kl/cfg80211.c
++++ b/drivers/net/wireless/ath/ath6kl/cfg80211.c
+@@ -27,7 +27,7 @@
+ #include "hif-ops.h"
+ #include "testmode.h"
+ 
+-static unsigned int ath6kl_p2p;
++static unsigned int ath6kl_p2p = 1;
+ 
+ module_param(ath6kl_p2p, uint, 0644);
+ 
+-- 
+1.7.1
+

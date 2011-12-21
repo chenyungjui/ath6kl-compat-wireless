@@ -169,6 +169,8 @@ install-modules: modules
 install-scripts:
 	@# All the scripts we can use
 	@mkdir -p $(DESTDIR)/usr/lib/compat-wireless/
+	@mkdir -p $(DESTDIR)/lib/firmware/ath6k/AR6003/hw2.1.1
+	@cp fw-2.bin $(DESTDIR)/lib/firmware/ath6k/AR6003/hw2.1.1
 	@install scripts/modlib.sh	$(DESTDIR)/usr/lib/compat-wireless/
 	@install scripts/madwifi-unload	$(DESTDIR)/usr/sbin/
 	@# This is to allow switching between drivers without blacklisting
@@ -325,6 +327,7 @@ install-scripts:
 
 uninstall:
 	@# New location, matches upstream
+	@rm -rf /lib/firmware/ath6k/AR6003/hw2.1.1
 	@rm -rf $(KLIB)/$(KMODDIR)/compat/
 	@rm -rf $(KLIB)/$(KMODDIR)/net/mac80211/
 	@rm -rf $(KLIB)/$(KMODDIR)/net/rfkill/

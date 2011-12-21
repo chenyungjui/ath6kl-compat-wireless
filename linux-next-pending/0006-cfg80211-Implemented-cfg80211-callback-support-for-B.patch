@@ -1,0 +1,245 @@
+From 437d8075b1f81908a6a0569b488aeb1a1d3dfb55 Mon Sep 17 00:00:00 2001
+From: SUraj Sumangala <surajs@qca.qualcomm.com>
+Date: Thu, 15 Dec 2011 11:01:40 +0530
+Subject: [PATCH 6/8] cfg80211: Implemented cfg80211 callback support for BT
+ coex NL80211 commands.
+
+Signed-off-by: Suraj Sumangala <surajs@qca.qualcomm.com>
+---
+ include/net/cfg80211.h |   27 ++++++++
+ net/wireless/nl80211.c |  159 ++++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 186 insertions(+), 0 deletions(-)
+
+diff --git a/include/net/cfg80211.h b/include/net/cfg80211.h
+index b1f243a..5c6571a 100644
+--- a/include/net/cfg80211.h
++++ b/include/net/cfg80211.h
+@@ -1442,7 +1442,23 @@ struct cfg80211_gtk_rekey_data {
+  *
+  * @probe_client: probe an associated client, must return a cookie that it
+  *	later passes to cfg80211_probe_status().
++ *
++ * @notify_btcoex_inq_status: Notify the Bluetooth inquiry status in
++ *	case of a Bleutooth co-ex device.
++ *
++ * @notify_btcoex_sco_status: Notify the Bluetooth SCO connection status in
++ *	case of a Bluetooth co-ex device.
++ *
++ * @notify_btcoex_a2dp_status: Notify the Bluetooth A2DP connection status in
++ *	case of a Bluetooth co-ex device.
++ *
++ * @notify_btcoex_acl_info: Notify the Bluetooth chip's ACL connction
++ *	information
++ *
++ * @notify_btcoex_antenna_config: Notify the Bluetooth WiFi chip antenna
++ *	configuration
+  */
++
+ struct cfg80211_ops {
+ 	int	(*suspend)(struct wiphy *wiphy, struct cfg80211_wowlan *wow);
+ 	int	(*resume)(struct wiphy *wiphy);
+@@ -1636,6 +1652,17 @@ struct cfg80211_ops {
+ 				const u8 *peer, u64 *cookie);
+ 
+ 	struct ieee80211_channel *(*get_channel)(struct wiphy *wiphy);
++
++	int	(*notify_btcoex_inq_status)(struct wiphy *wiphy, bool status);
++	int	(*notify_btcoex_sco_status)(struct wiphy *wiphy,  bool status,
++					    bool esco, u32 tx_interval,
++					    u32 tx_pkt_len);
++	int	(*notify_btcoex_a2dp_status)(struct wiphy *wiphy, bool status);
++	int	(*notify_btcoex_acl_info)(struct wiphy *wiphy,
++					  enum nl80211_btcoex_acl_role role,
++					  u32 remote_lmp_ver);
++	int	(*notify_btcoex_antenna_config)(struct wiphy *wiphy,
++					  enum nl80211_btcoex_antenna_config);
+ };
+ 
+ /*
+diff --git a/net/wireless/nl80211.c b/net/wireless/nl80211.c
+index 6bc7c4b..9f4e26c 100644
+--- a/net/wireless/nl80211.c
++++ b/net/wireless/nl80211.c
+@@ -199,6 +199,17 @@ static const struct nla_policy nl80211_policy[NL80211_ATTR_MAX+1] = {
+ 	[NL80211_ATTR_DONT_WAIT_FOR_ACK] = { .type = NLA_FLAG },
+ 	[NL80211_ATTR_PROBE_RESP] = { .type = NLA_BINARY,
+ 				      .len = IEEE80211_MAX_DATA_LEN },
++
++	[NL80211_ATTR_BTCOEX_INQ_STATUS] = { .type = NLA_FLAG },
++	[NL80211_ATTR_BTCOEX_SCO_STATUS] = { .type = NLA_FLAG },
++	[NL80211_ATTR_BTCOEX_TYPE_ESCO] = { .type = NLA_FLAG },
++	[NL80211_ATTR_BTCOEX_ESCO_TX_INTERVAL] = { .type = NLA_U32 },
++	[NL80211_ATTR_BTCOEX_ESCO_TX_PKT_LEN] = { .type = NLA_U32 },
++	[NL80211_ATTR_BTCOEX_A2DP_STATUS] = { .type = NLA_FLAG },
++	[NL80211_ATTR_BTCOEX_ACL_ROLE] = { .type = NLA_U32 },
++	[NL80211_ATTR_BTCOEX_REMOTE_LMP_VER] = { .type = NLA_U32 },
++
++	[NL80211_ATTR_BTCOEX_ANTENNA_CONFIG] = { .type = NLA_U32 },
+ };
+ 
+ /* policy for the key attributes */
+@@ -5950,6 +5961,114 @@ static int nl80211_register_beacons(struct sk_buff *skb, struct genl_info *info)
+ 	return 0;
+ }
+ 
++static int nl80211_btcoex_notify_inq(struct sk_buff *skb,
++				      struct genl_info *info)
++{
++	struct cfg80211_registered_device *dev = info->user_ptr[0];
++	bool scan_status;
++
++	if (!dev)
++		return -ENODEV;
++
++	scan_status = !!info->attrs[NL80211_ATTR_BTCOEX_INQ_STATUS];
++
++	if (!dev->ops->notify_btcoex_inq_status)
++		return -EOPNOTSUPP;
++
++	return dev->ops->notify_btcoex_inq_status(&dev->wiphy, scan_status);
++}
++
++static int nl80211_btcoex_notify_sco(struct sk_buff *skb,
++				     struct genl_info *info)
++{
++	struct cfg80211_registered_device *dev = info->user_ptr[0];
++	int tx_interval = 0;
++	int tx_pkt_len = 0;
++	bool sco_status;
++	bool esco;
++
++	if (!dev)
++		return -ENODEV;
++
++	sco_status = !!info->attrs[NL80211_ATTR_BTCOEX_SCO_STATUS];
++	esco = !!info->attrs[NL80211_ATTR_BTCOEX_TYPE_ESCO];
++
++	if (esco) {
++		if (info->attrs[NL80211_ATTR_BTCOEX_ESCO_TX_INTERVAL])
++			tx_interval = nla_get_u32(info->attrs
++				      [NL80211_ATTR_BTCOEX_ESCO_TX_INTERVAL]);
++
++		if (info->attrs[NL80211_ATTR_BTCOEX_ESCO_TX_PKT_LEN])
++			tx_pkt_len = nla_get_u32(info->attrs
++					[NL80211_ATTR_BTCOEX_ESCO_TX_PKT_LEN]);
++	}
++	if (!dev->ops->notify_btcoex_sco_status)
++		return -EOPNOTSUPP;
++
++	return dev->ops->notify_btcoex_sco_status(&dev->wiphy, sco_status,
++						  esco, tx_interval,
++						  tx_pkt_len);
++}
++
++static int nl80211_btcoex_notify_a2dp(struct sk_buff *skb,
++				      struct genl_info *info)
++{
++	struct cfg80211_registered_device *dev = info->user_ptr[0];
++	bool a2dp_status;
++
++	if (!dev)
++		return -ENODEV;
++
++	a2dp_status = !!info->attrs[NL80211_ATTR_BTCOEX_A2DP_STATUS];
++
++	if (!dev->ops->notify_btcoex_a2dp_status)
++		return -EOPNOTSUPP;
++
++	return dev->ops->notify_btcoex_a2dp_status(&dev->wiphy, a2dp_status);
++}
++
++static int nl80211_btcoex_notify_acl_info(struct sk_buff *skb,
++					  struct genl_info *info)
++{
++	struct cfg80211_registered_device *dev = info->user_ptr[0];
++	enum nl80211_btcoex_acl_role role = NL80211_BTCOEX_ACL_ROLE_UNKNOWN;
++	u32 remote_lmp_ver = 0;
++
++	if (!dev)
++		return -ENODEV;
++
++	if (info->attrs[NL80211_ATTR_BTCOEX_ACL_ROLE])
++		role = nla_get_u32(info->attrs[NL80211_ATTR_BTCOEX_ACL_ROLE]);
++
++	if (info->attrs[NL80211_ATTR_BTCOEX_REMOTE_LMP_VER])
++		remote_lmp_ver = nla_get_u32(info->attrs
++					[NL80211_ATTR_BTCOEX_REMOTE_LMP_VER]);
++
++	if (!dev->ops->notify_btcoex_acl_info)
++		return -EOPNOTSUPP;
++
++	return dev->ops->notify_btcoex_acl_info(&dev->wiphy, role,
++						remote_lmp_ver);
++}
++static int nl80211_btcoex_notify_antenna_config(struct sk_buff *skb,
++						struct genl_info *info)
++{
++	struct cfg80211_registered_device *dev = info->user_ptr[0];
++	enum nl80211_btcoex_antenna_config config = NL80211_BTCOEX_ANTENNA_DA;
++
++	if (!dev)
++		return -ENODEV;
++
++	if (!info->attrs[NL80211_ATTR_BTCOEX_ANTENNA_CONFIG])
++		return -EINVAL;
++
++	config = nla_get_u32(info->attrs[NL80211_ATTR_BTCOEX_ANTENNA_CONFIG]);
++
++	if (!dev->ops->notify_btcoex_antenna_config)
++		return -EOPNOTSUPP;
++
++	return dev->ops->notify_btcoex_antenna_config(&dev->wiphy, config);
++}
+ #define NL80211_FLAG_NEED_WIPHY		0x01
+ #define NL80211_FLAG_NEED_NETDEV	0x02
+ #define NL80211_FLAG_NEED_RTNL		0x04
+@@ -6529,6 +6648,46 @@ static struct genl_ops nl80211_ops[] = {
+ 		.internal_flags = NL80211_FLAG_NEED_WIPHY |
+ 				  NL80211_FLAG_NEED_RTNL,
+ 	},
++	{
++		.cmd = NL80211_CMD_BTCOEX_INQ,
++		.doit = nl80211_btcoex_notify_inq,
++		.policy = nl80211_policy,
++		.flags = GENL_ADMIN_PERM,
++		.internal_flags = NL80211_FLAG_NEED_NETDEV |
++				  NL80211_FLAG_NEED_RTNL,
++	},
++	{
++		.cmd = NL80211_CMD_BTCOEX_SCO,
++		.doit = nl80211_btcoex_notify_sco,
++		.policy = nl80211_policy,
++		.flags = GENL_ADMIN_PERM,
++		.internal_flags = NL80211_FLAG_NEED_NETDEV |
++				  NL80211_FLAG_NEED_RTNL,
++	},
++	{
++		.cmd = NL80211_CMD_BTCOEX_A2DP,
++		.doit = nl80211_btcoex_notify_a2dp,
++		.policy = nl80211_policy,
++		.flags = GENL_ADMIN_PERM,
++		.internal_flags = NL80211_FLAG_NEED_NETDEV |
++				  NL80211_FLAG_NEED_RTNL,
++	},
++	{
++		.cmd = NL80211_CMD_BTCOEX_ACL_INFO,
++		.doit = nl80211_btcoex_notify_acl_info,
++		.policy = nl80211_policy,
++		.flags = GENL_ADMIN_PERM,
++		.internal_flags = NL80211_FLAG_NEED_NETDEV |
++				  NL80211_FLAG_NEED_RTNL,
++	},
++	{
++		.cmd = NL80211_CMD_BTCOEX_ANTENNA_CONFIG,
++		.doit = nl80211_btcoex_notify_antenna_config,
++		.policy = nl80211_policy,
++		.flags = GENL_ADMIN_PERM,
++		.internal_flags = NL80211_FLAG_NEED_NETDEV |
++				  NL80211_FLAG_NEED_RTNL,
++	},
+ };
+ 
+ static struct genl_multicast_group nl80211_mlme_mcgrp = {
+-- 
+1.7.7.4
+
