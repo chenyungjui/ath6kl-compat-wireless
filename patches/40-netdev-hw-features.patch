@@ -14,6 +14,46 @@ Date:   Thu Apr 7 07:32:18 2011 +0000
     Signed-off-by: Michał Mirosław <mirq-linux@rere.qmqm.pl>
     Signed-off-by: David S. Miller <davem@davemloft.net>
 
+--- a/drivers/net/wireless/ath/ath6kl/init.c
++++ b/drivers/net/wireless/ath/ath6kl/init.c
+@@ -1796,7 +1796,9 @@ int ath6kl_core_init(struct ath6kl *ar)
+
+	set_bit(FIRST_BOOT, &ar->flag);
+
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,39))
+	ndev->hw_features |= NETIF_F_IP_CSUM | NETIF_F_RXCSUM;
++#endif
+
+	ret = ath6kl_init_hw_start(ar);
+	if (ret) {
+--- a/drivers/net/wireless/ath/ath6kl/main.c
++++ b/drivers/net/wireless/ath/ath6kl/main.c
+@@ -1020,6 +1020,7 @@ static struct net_device_stats *ath6kl_get_stats(struct net_device *dev)
+	return &vif->net_stats;
+ }
+
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,39))
+ static int ath6kl_set_features(struct net_device *dev, u32 features)
+ {
+	struct ath6kl_vif *vif = netdev_priv(dev);
+@@ -1051,6 +1052,7 @@ static int ath6kl_set_features(struct net_device *dev, u32 features)
+
+	return err;
+ }
++#endif /* (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,39)) */
+
+ static void ath6kl_set_multicast_list(struct net_device *ndev)
+ {
+@@ -1166,7 +1168,9 @@ static struct net_device_ops ath6kl_netdev_ops = {
+	.ndo_stop               = ath6kl_close,
+	.ndo_start_xmit         = ath6kl_data_tx,
+	.ndo_get_stats          = ath6kl_get_stats,
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,39))
+	.ndo_set_features       = ath6kl_set_features,
++#endif /* (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,39)) */
+	.ndo_set_rx_mode	= ath6kl_set_multicast_list,
+ };
+
 --- a/drivers/net/ethernet/atheros/atl1c/atl1c_ethtool.c
 +++ b/drivers/net/ethernet/atheros/atl1c/atl1c_ethtool.c
 @@ -114,6 +114,13 @@ static int atl1c_set_settings(struct net
