@@ -5,7 +5,7 @@ suspend and resume that are not backported.
 
 --- a/drivers/net/wireless/ath/ath6kl/cfg80211.c
 +++ b/drivers/net/wireless/ath/ath6kl/cfg80211.c
-@@ -1943,7 +1943,7 @@ int ath6kl_cfg80211_resume(struct ath6kl
+@@ -1963,7 +1963,7 @@ int ath6kl_cfg80211_resume(struct ath6kl
  	return 0;
  }
  
@@ -14,7 +14,7 @@ suspend and resume that are not backported.
  
  /* hif layer decides what suspend mode to use */
  static int __ath6kl_cfg80211_suspend(struct wiphy *wiphy,
-@@ -2617,7 +2617,7 @@ static struct cfg80211_ops ath6kl_cfg802
+@@ -2554,7 +2554,7 @@ static struct cfg80211_ops ath6kl_cfg802
  	.del_pmksa = ath6kl_del_pmksa,
  	.flush_pmksa = ath6kl_flush_pmksa,
  	CFG80211_TESTMODE_CMD(ath6kl_tm_cmd)
@@ -33,7 +33,22 @@ suspend and resume that are not backported.
  static inline int ath6kl_hif_suspend(struct ath6kl *ar,
  				     struct cfg80211_wowlan *wow)
  {
-@@ -127,6 +128,7 @@ static inline int ath6kl_hif_resume(stru
+@@ -90,6 +91,7 @@ static inline int ath6kl_hif_suspend(str
+ 
+ 	return ar->hif_ops->suspend(ar, wow);
+ }
++#endif
+ 
+ /*
+  * Read from the ATH6KL through its diagnostic window. No cooperation from
+@@ -121,12 +123,14 @@ static inline int ath6kl_hif_bmi_write(s
+ 	return ar->hif_ops->bmi_write(ar, buf, len);
+ }
+ 
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,34))
+ static inline int ath6kl_hif_resume(struct ath6kl *ar)
+ {
+ 	ath6kl_dbg(ATH6KL_DBG_HIF, "hif resume\n");
  
  	return ar->hif_ops->resume(ar);
  }
@@ -51,14 +66,14 @@ suspend and resume that are not backported.
  static int ath6kl_sdio_suspend(struct ath6kl *ar, struct cfg80211_wowlan *wow)
  {
  	struct ath6kl_sdio *ar_sdio = ath6kl_sdio_priv(ar);
-@@ -1135,6 +1136,7 @@ static int ath6kl_sdio_bmi_read(struct a
+@@ -877,6 +878,7 @@ static int ath6kl_sdio_resume(struct ath
  
  	return 0;
  }
 +#endif /* (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,34)) */
  
- static void ath6kl_sdio_stop(struct ath6kl *ar)
- {
+ /* set the window address register (using 4-byte register access ). */
+ static int ath6kl_set_addrwin_reg(struct ath6kl *ar, u32 reg_addr, u32 addr)
 @@ -1178,8 +1180,10 @@ static const struct ath6kl_hif_ops ath6k
  	.enable_scatter = ath6kl_sdio_enable_scatter,
  	.scat_req_rw = ath6kl_sdio_async_rw_scatter,
@@ -172,7 +187,7 @@ suspend and resume that are not backported.
  
 --- a/drivers/net/wireless/brcm80211/brcmfmac/bcmsdh_sdmmc.c
 +++ b/drivers/net/wireless/brcm80211/brcmfmac/bcmsdh_sdmmc.c
-@@ -55,7 +55,7 @@ static bool
+@@ -59,7 +59,7 @@ static bool
  brcmf_pm_resume_error(struct brcmf_sdio_dev *sdiodev)
  {
  	bool is_err = false;
@@ -181,7 +196,7 @@ suspend and resume that are not backported.
  	is_err = atomic_read(&sdiodev->suspend);
  #endif
  	return is_err;
-@@ -64,7 +64,7 @@ brcmf_pm_resume_error(struct brcmf_sdio_
+@@ -68,7 +68,7 @@ brcmf_pm_resume_error(struct brcmf_sdio_
  static void
  brcmf_pm_resume_wait(struct brcmf_sdio_dev *sdiodev, wait_queue_head_t *wq)
  {
@@ -190,7 +205,7 @@ suspend and resume that are not backported.
  	int retry = 0;
  	while (atomic_read(&sdiodev->suspend) && retry++ != 30)
  		wait_event_timeout(*wq, false, HZ/100);
-@@ -550,7 +550,7 @@ static void brcmf_ops_sdio_remove(struct
+@@ -539,7 +539,7 @@ static void brcmf_ops_sdio_remove(struct
  	}
  }
  
@@ -199,7 +214,7 @@ suspend and resume that are not backported.
  static int brcmf_sdio_suspend(struct device *dev)
  {
  	mmc_pm_flag_t sdio_flags;
-@@ -603,7 +603,7 @@ static struct sdio_driver brcmf_sdmmc_dr
+@@ -589,7 +589,7 @@ static struct sdio_driver brcmf_sdmmc_dr
  	.remove = brcmf_ops_sdio_remove,
  	.name = "brcmfmac",
  	.id_table = brcmf_sdmmc_ids,
@@ -208,3 +223,4 @@ suspend and resume that are not backported.
  	.drv = {
  		.pm = &brcmf_sdio_pm_ops,
  	},
+
