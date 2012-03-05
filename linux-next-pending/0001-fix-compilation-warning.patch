@@ -39,7 +39,7 @@ index 34945ed..d1554c8 100644
  	u8 key_type;
  
 diff --git a/drivers/net/wireless/ath/ath6kl/sdio.c b/drivers/net/wireless/ath/ath6kl/sdio.c
-index 808ff8d..4970b2c 100755
+index 808ff8d..4970b2c 100644
 --- a/drivers/net/wireless/ath/ath6kl/sdio.c
 +++ b/drivers/net/wireless/ath/ath6kl/sdio.c
 @@ -329,7 +329,7 @@ static int ath6kl_sdio_alloc_prep_scat_req(struct ath6kl_sdio *ar_sdio,
