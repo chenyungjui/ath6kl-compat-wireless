@@ -567,10 +567,17 @@
  *	remote device. This feature is useful when the wireless device is a
  *	Bluetooth-Wifi coex solution.
  *
- * @NNL80211_CMD_BTCOEX_ANTENNA_CONFIG: This command is used to let the wifi
+ * @NL80211_CMD_BTCOEX_ANTENNA_CONFIG: This command is used to let the wifi
  *	driver know information regarding the antenna configuration used
  *	in case of a BT-coex solution. This information is provide as
  *	%NL80211_ATTR_BTCOEX_ANTENNA_CONFIG.This feature is useful when
+ *	the wireless device is a Bluetooth-Wifi coex solution.
+ *
+ * @NL80211_CMD_BTCOEX_BT_VENDOR: This command is used to let the wifi
+ *	driver know the Bluetooth chip vendor. This would let it use
+ *	different configuration in case of different BT chip vendor
+ *	is used in BT-Coex scenario. This information is provided as
+ *	%NL80211_ATTR_BT_VENDOR_ID.This feature is useful when
  *	the wireless device is a Bluetooth-Wifi coex solution.
  *
  * @NL80211_CMD_MAX: highest used command number
@@ -715,6 +722,8 @@ enum nl80211_commands {
 	NL80211_CMD_BTCOEX_A2DP,
 	NL80211_CMD_BTCOEX_ACL_INFO,
 	NL80211_CMD_BTCOEX_ANTENNA_CONFIG,
+	NL80211_CMD_BTCOEX_BT_VENDOR,
+	NL80211_CMD_BTCOEX,
 
 	/* add new commands above here */
 
@@ -1253,7 +1262,10 @@ enum nl80211_commands {
  *	configuration. See &enum nl80211_btcoex_antenna_config for possible
  *	value. This flag is useful for resource management in a bluetooth
  *	wifi combo solution.
- *
+ * @%NL80211_ATTR_BT_VENDOR_ID: Indicates the Bluetooth chip
+ *	vendor name. See &enum nl80211_btcoex_vendor_list for possible
+ *	value. This flag is useful for resource management in a bluetooth
+ *	wifi combo solution.
  *
  * @NL80211_ATTR_MAX: highest attribute number currently defined
  * @__NL80211_ATTR_AFTER_LAST: internal use
@@ -1502,6 +1514,8 @@ enum nl80211_attrs {
 	NL80211_ATTR_BTCOEX_ACL_ROLE,
 	NL80211_ATTR_BTCOEX_REMOTE_LMP_VER,
 	NL80211_ATTR_BTCOEX_ANTENNA_CONFIG,
+	NL80211_ATTR_BT_VENDOR_ID,
+	NL80211_ATTR_BTCOEX_DATA,
 
 	/* add attributes here, update the policy in nl80211.c */
 
@@ -2875,5 +2889,30 @@ enum nl80211_btcoex_acl_role {
 enum nl80211_btcoex_antenna_config {
 	NL80211_BTCOEX_ANTENNA_DA,
 	NL80211_BTCOEX_ANTENNA_SA,
+};
+/**
+ * enum nl80211_btcoex_vendor_list - Bluetooth chip vendor list
+ * @NL80211_BTCOEX_VENDOR_DEFAULT: Uses default Bluetooth chip.
+ * @NL80211_BTCOEX_VENDOR_QCOM: Uses Qualcomm Bluetooth chip.
+ */
+enum nl80211_btcoex_vendor_list {
+	NL80211_BTCOEX_VENDOR_DEFAULT,
+	NL80211_BTCOEX_VENDOR_QCOM,
+};
+
+enum nl80211_btcoex_cmds {
+	NL80211_WMI_SET_BT_STATUS = 0,
+	NL80211_WMI_SET_BT_PARAMS,
+	NL80211_WMI_SET_BT_FT_ANT,
+	NL80211_WMI_SET_COLOCATED_BT_DEV,
+	NL80211_WMI_SET_BT_INQUIRY_PAGE_CONFIG,
+	NL80211_WMI_SET_BT_SCO_CONFIG,
+	NL80211_WMI_SET_BT_A2DP_CONFIG,
+	NL80211_WMI_SET_BT_ACLCOEX_CONFIG,
+	NL80211_WMI_SET_BT_DEBUG,
+	NL80211_WMI_SET_BT_OPSTATUS,
+	NL80211_WMI_GET_BT_CONFIG,
+	NL80211_WMI_GET_BT_STATS,
+	NL80211_WMI_BT_MAX,
 };
 #endif /* __LINUX_NL80211_H */

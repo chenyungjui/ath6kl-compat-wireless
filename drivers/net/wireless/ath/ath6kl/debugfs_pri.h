@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2010-2011 Atheros Communications Inc.
- * Copyright (c) 2011 Qualcomm Atheros, Inc.
+ * Copyright (c) 2012 Qualcomm Atheros, Inc.
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -15,23 +14,30 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include "core.h"
+#ifndef DEBUG_PRI_H
+#define DEBUG_PRI_H
 
-#ifdef CONFIG_NL80211_TESTMODE
+#ifdef CONFIG_ATH6KL_DEBUG
 
-void ath6kl_tm_rx_event(struct ath6kl *ar, void *buf, size_t buf_len);
-int ath6kl_tm_cmd(struct wiphy *wiphy, void *data, int len);
+#define ATH6KL_ERR_REPORT_BMISS_MASK  BIT(3)
 
-#else
+struct wmi_tgt_err_report_mask {
+	__le32 mask;
+};
 
-static inline void ath6kl_tm_rx_event(struct ath6kl *ar, void *buf,
-				      size_t buf_len)
-{
-}
+struct wmi_tgt_err_report_evt {
+	__le32 err_val;
+} __packed;
 
-static inline int ath6kl_tm_cmd(struct wiphy *wiphy, void *data, int len)
-{
-	return 0;
-}
+#define ATH6KL_DEFAULT_SCAN_CTRL_FLAGS    (CONNECT_SCAN_CTRL_FLAGS   |  \
+					   SCAN_CONNECTED_CTRL_FLAGS |  \
+					   ACTIVE_SCAN_CTRL_FLAGS    |  \
+					   ROAM_SCAN_CTRL_FLAGS      |  \
+					   ENABLE_AUTO_CTRL_FLAGS)
 
+#define ATH6KL_MAX_SCAN_CTRL_FLAGS	   0x7F
+
+int ath6kl_wmi_error_report_event(struct wmi *wmi, u8 *data, int len);
+int ath6kl_init_debugfs_pri(struct ath6kl *ar);
+#endif
 #endif

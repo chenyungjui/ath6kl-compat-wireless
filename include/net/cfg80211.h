@@ -1457,6 +1457,9 @@ struct cfg80211_gtk_rekey_data {
  *
  * @notify_btcoex_antenna_config: Notify the Bluetooth WiFi chip antenna
  *	configuration
+ *
+ * @notify_btcoex_bt_vendor: Notify the Bluetooth chip vendor in case of using
+ *	different Bluetooth chip vendor
  */
 
 struct cfg80211_ops {
@@ -1663,6 +1666,10 @@ struct cfg80211_ops {
 					  u32 remote_lmp_ver);
 	int	(*notify_btcoex_antenna_config)(struct wiphy *wiphy,
 					  enum nl80211_btcoex_antenna_config);
+	int	(*notify_btcoex_bt_vendor)(struct wiphy *wiphy,
+					   enum nl80211_btcoex_vendor_list);
+	int	(*notify_btcoex)(struct wiphy *wiphy,
+					   u8 *buf, int len);
 };
 
 /*

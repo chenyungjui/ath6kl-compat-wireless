@@ -154,8 +154,17 @@ static inline void set_default_sco(struct wmi_set_btcoex_sco_config_cmd *cmd)
 #define IDLE_SLOT_THREASHOLD	10
 #define MAX_AGGR_SIZE_ABOVE_THREASHOLD	8
 #define POLL_LATENCY_BELOW_THRESHOLD	1
+#define POLL_LATENCY_ABOVE_THRESHOLD	2
+#define POLL_LATENCY_BELOW_THRESHOLD_EDR	2
+#define POLL_LATENCY_ABOVE_THRESHOLD_EDR	3
+#define STOMP_CYCLE_ABOVE_THREASHOLD	2
 #define STOMP_CYCLE_BELOW_THREASHOLD	5
+#define STOMP_CYCLE_ABOVE_THREASHOLD_EDR	2
+#define STOMP_CYCLE_BELOW_THREASHOLD_EDR	5
 #define MAX_STOMP_CNT_BELOW_THRESHOLD	4
+#define MAX_STOMP_CNT_ABOVE_THRESHOLD	2
+#define MAX_STOMP_CNT_BELOW_THRESHOLD_EDR	4
+#define MAX_STOMP_CNT_ABOVE_THRESHOLD_EDR	2
 int ath6kl_wmi_set_btcoex_sco_op(struct wmi *wmi, bool esco, u32 tx_interval,
 				 u32 tx_pkt_len)
 {
@@ -191,21 +200,48 @@ int ath6kl_wmi_set_btcoex_sco_op(struct wmi *wmi, bool esco, u32 tx_interval,
 	sco_config->sco_slots = cpu_to_le32(max_slot);
 
 	if (tx_interval >= max_slot)
-		sco_config->sco_idle_slots = cpu_to_le32(max_slot);
+		sco_config->sco_idle_slots =
+				cpu_to_le32(tx_interval - max_slot);
 
-	if (esco)
-		sco_config->sco_flags |= WMI_SCO_CONFIG_FLAG_IS_EDR_CAPABLE;
 
-	if (sco_config->sco_idle_slots >= IDLE_SLOT_THREASHOLD) {
+	if (sco_config->sco_idle_slots >= IDLE_SLOT_THREASHOLD)
 		optmode_config->sco_max_aggr_size =
 				cpu_to_le32(MAX_AGGR_SIZE_ABOVE_THREASHOLD);
+
+	if (esco) {
+		sco_config->sco_flags |= WMI_SCO_CONFIG_FLAG_IS_EDR_CAPABLE;
+
+		if (sco_config->sco_idle_slots >= IDLE_SLOT_THREASHOLD) {
+			ppoll_config->sco_pspoll_latency_fraction =
+				cpu_to_le32(POLL_LATENCY_ABOVE_THRESHOLD_EDR);
+			ppoll_config->sco_stomp_duty_cycle_val =
+				cpu_to_le32(STOMP_CYCLE_ABOVE_THREASHOLD_EDR);
+			wlan_config->max_scan_stomp_cnt =
+				cpu_to_le32(MAX_STOMP_CNT_ABOVE_THRESHOLD_EDR);
+		} else {
+			ppoll_config->sco_pspoll_latency_fraction =
+				cpu_to_le32(POLL_LATENCY_BELOW_THRESHOLD_EDR);
+			ppoll_config->sco_stomp_duty_cycle_val =
+				cpu_to_le32(STOMP_CYCLE_BELOW_THREASHOLD_EDR);
+			wlan_config->max_scan_stomp_cnt =
+				cpu_to_le32(MAX_STOMP_CNT_BELOW_THRESHOLD_EDR);
+		}
 	} else {
-		ppoll_config->sco_pspoll_latency_fraction =
+		if (sco_config->sco_idle_slots >= IDLE_SLOT_THREASHOLD) {
+			ppoll_config->sco_pspoll_latency_fraction =
+				cpu_to_le32(POLL_LATENCY_ABOVE_THRESHOLD);
+			ppoll_config->sco_stomp_duty_cycle_val =
+				cpu_to_le32(STOMP_CYCLE_ABOVE_THREASHOLD);
+			wlan_config->max_scan_stomp_cnt =
+				cpu_to_le32(MAX_STOMP_CNT_ABOVE_THRESHOLD);
+		} else {
+			ppoll_config->sco_pspoll_latency_fraction =
 				cpu_to_le32(POLL_LATENCY_BELOW_THRESHOLD);
-		ppoll_config->sco_stomp_duty_cycle_val =
+			ppoll_config->sco_stomp_duty_cycle_val =
 				cpu_to_le32(STOMP_CYCLE_BELOW_THREASHOLD);
-		wlan_config->max_scan_stomp_cnt =
+			wlan_config->max_scan_stomp_cnt =
 				cpu_to_le32(MAX_STOMP_CNT_BELOW_THRESHOLD);
+		}
 	}
 
 	ath6kl_dbg(ATH6KL_DBG_WMI, "WMI_SET_BTCOEX_SCO_CONFIG_CMDID\n");
@@ -424,7 +460,11 @@ static inline void update_acl_role(struct wmi_set_btcoex_a2dp_config_cmd *cmd,
 	}
 }
 
-int ath6kl_wmi_set_btcoex_a2dp_op(struct wmi *wmi, u32 role, u32 ver)
+#define BT_VENDOR_DEFAULT	0
+#define BT_VENDOR_QCOM	1
+
+int ath6kl_wmi_set_btcoex_a2dp_op(struct wmi *wmi, u32 role, u32 ver,
+				  u32 vendor)
 {
 	struct wmi_set_btcoex_a2dp_config_cmd *cmd;
 	struct sk_buff *skb;
@@ -439,7 +479,9 @@ int ath6kl_wmi_set_btcoex_a2dp_op(struct wmi *wmi, u32 role, u32 ver)
 
 	update_acl_role(cmd, role);
 	update_lmp_ver(cmd, ver);
-	set_qcom_a2dp(cmd);
+
+	if (vendor == BT_VENDOR_QCOM)
+		set_qcom_a2dp(cmd);
 
 	ath6kl_dbg(ATH6KL_DBG_WMI, "WMI_SET_BTCOEX_A2DP_CONFIG_CMDID\n");
 	dump_a2dp_cmd(cmd);
@@ -490,4 +532,96 @@ int ath6kl_wmi_set_btcoex_set_fe_antenna(struct wmi *wmi, u8 antenna_type)
 	return ath6kl_wmi_cmd_send(wmi, 0, skb,
 				  WMI_SET_BTCOEX_FE_ANT_CMDID,
 				  NO_SYNC_WMIFLAG);
+}
+
+static int ath6kl_get_wmi_cmd(int nl_cmd)
+{
+	int wmi_cmd = 0;
+	switch (nl_cmd) {
+	case NL80211_WMI_SET_BT_STATUS:
+		ath6kl_dbg(ATH6KL_DBG_WMI, "Set BT status\n");
+		wmi_cmd = WMI_SET_BT_STATUS_CMDID;
+		break;
+
+	case NL80211_WMI_SET_BT_PARAMS:
+		ath6kl_dbg(ATH6KL_DBG_WMI, "Set BT params\n");
+		wmi_cmd = WMI_SET_BT_PARAMS_CMDID;
+		break;
+
+	case NL80211_WMI_SET_BT_FT_ANT:
+		ath6kl_dbg(ATH6KL_DBG_WMI, "Set BT FT antenna\n");
+		wmi_cmd = WMI_SET_BTCOEX_FE_ANT_CMDID;
+		break;
+
+	case NL80211_WMI_SET_COLOCATED_BT_DEV:
+		ath6kl_dbg(ATH6KL_DBG_WMI, "Set BT collocated dev\n");
+		wmi_cmd = WMI_SET_BTCOEX_COLOCATED_BT_DEV_CMDID;
+		break;
+
+	case NL80211_WMI_SET_BT_INQUIRY_PAGE_CONFIG:
+		ath6kl_dbg(ATH6KL_DBG_WMI, "Set BT inquiry page\n");
+		wmi_cmd = WMI_SET_BTCOEX_BTINQUIRY_PAGE_CONFIG_CMDID;
+		break;
+
+	case NL80211_WMI_SET_BT_SCO_CONFIG:
+		ath6kl_dbg(ATH6KL_DBG_WMI, "Set BT sco config\n");
+		wmi_cmd = WMI_SET_BTCOEX_SCO_CONFIG_CMDID;
+		break;
+
+	case NL80211_WMI_SET_BT_A2DP_CONFIG:
+		ath6kl_dbg(ATH6KL_DBG_WMI, "Set BT a2dp config\n");
+		wmi_cmd = WMI_SET_BTCOEX_A2DP_CONFIG_CMDID;
+		break;
+
+	case NL80211_WMI_SET_BT_ACLCOEX_CONFIG:
+		ath6kl_dbg(ATH6KL_DBG_WMI, "Set BT acl config\n");
+		wmi_cmd = WMI_SET_BTCOEX_ACLCOEX_CONFIG_CMDID;
+		break;
+
+	case NL80211_WMI_SET_BT_DEBUG:
+		ath6kl_dbg(ATH6KL_DBG_WMI, "Set BT bt debug\n");
+		wmi_cmd = WMI_SET_BTCOEX_DEBUG_CMDID;
+		break;
+
+	case NL80211_WMI_SET_BT_OPSTATUS:
+		ath6kl_dbg(ATH6KL_DBG_WMI, "Set BT op status\n");
+		wmi_cmd = WMI_SET_BTCOEX_BT_OPERATING_STATUS_CMDID;
+		break;
+
+	case NL80211_WMI_GET_BT_CONFIG:
+		ath6kl_dbg(ATH6KL_DBG_WMI, "Get BT config\n");
+		wmi_cmd = WMI_GET_BTCOEX_CONFIG_CMDID;
+		break;
+
+	case NL80211_WMI_GET_BT_STATS:
+		ath6kl_dbg(ATH6KL_DBG_WMI, "Get BT status\n");
+		wmi_cmd = WMI_GET_BTCOEX_STATS_CMDID;
+		break;
+	}
+	return wmi_cmd;
+}
+
+int ath6kl_wmi_send_btcoex_cmd(struct wmi *wmi,
+			u8 *buf, int len)
+{
+	struct sk_buff *skb;
+	u32 nl_cmd;
+	int wmi_cmd;
+
+	nl_cmd = *(u32 *)buf;
+	buf += sizeof(u32);
+	len -= sizeof(u32);
+	wmi_cmd = ath6kl_get_wmi_cmd(nl_cmd);
+	if (wmi_cmd == 0)
+		return -ENOMEM;
+
+	skb = ath6kl_wmi_btcoex_get_new_buf(len);
+	if (!skb)
+		return -ENOMEM;
+
+	memcpy(skb->data, buf, len);
+
+	return ath6kl_wmi_cmd_send(wmi, 0, skb,
+			(enum wmi_cmd_id)wmi_cmd,
+			NO_SYNC_WMIFLAG);
 }

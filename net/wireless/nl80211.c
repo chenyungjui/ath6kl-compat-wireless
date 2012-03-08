@@ -210,6 +210,9 @@ static const struct nla_policy nl80211_policy[NL80211_ATTR_MAX+1] = {
 	[NL80211_ATTR_BTCOEX_REMOTE_LMP_VER] = { .type = NLA_U32 },
 
 	[NL80211_ATTR_BTCOEX_ANTENNA_CONFIG] = { .type = NLA_U32 },
+	[NL80211_ATTR_BT_VENDOR_ID] = { .type = NLA_U32 },
+	[NL80211_ATTR_BTCOEX_DATA] = { .type = NLA_BINARY,
+				      .len = IEEE80211_MAX_DATA_LEN },
 };
 
 /* policy for the key attributes */
@@ -6073,6 +6076,49 @@ static int nl80211_btcoex_notify_antenna_config(struct sk_buff *skb,
 
 	return dev->ops->notify_btcoex_antenna_config(&dev->wiphy, config);
 }
+
+static int nl80211_btcoex_notify(struct sk_buff *skb,
+					   struct genl_info *info)
+{
+	struct cfg80211_registered_device *dev = info->user_ptr[0];
+	u8 *buf;
+	int len;
+
+	if (!dev)
+		return -ENODEV;
+
+	if (!info->attrs[NL80211_ATTR_BTCOEX_DATA])
+		return -EINVAL;
+
+	if (!dev->ops->notify_btcoex)
+		return -EOPNOTSUPP;
+
+	buf = (char *)nla_data(info->attrs[NL80211_ATTR_BTCOEX_DATA]);
+	len = nla_len(info->attrs[NL80211_ATTR_BTCOEX_DATA]);
+
+	return dev->ops->notify_btcoex(&dev->wiphy, buf, len);
+}
+
+static int nl80211_btcoex_notify_bt_vendor(struct sk_buff *skb,
+					   struct genl_info *info)
+{
+	struct cfg80211_registered_device *dev = info->user_ptr[0];
+	enum nl80211_btcoex_antenna_config config =
+						NL80211_BTCOEX_VENDOR_DEFAULT;
+
+	if (!dev)
+		return -ENODEV;
+
+	if (!info->attrs[NL80211_ATTR_BT_VENDOR_ID])
+		return -EINVAL;
+
+	config = nla_get_u32(info->attrs[NL80211_ATTR_BT_VENDOR_ID]);
+
+	if (!dev->ops->notify_btcoex_bt_vendor)
+		return -EOPNOTSUPP;
+
+	return dev->ops->notify_btcoex_bt_vendor(&dev->wiphy, config);
+}
 #define NL80211_FLAG_NEED_WIPHY		0x01
 #define NL80211_FLAG_NEED_NETDEV	0x02
 #define NL80211_FLAG_NEED_RTNL		0x04
@@ -6689,6 +6735,22 @@ static struct genl_ops nl80211_ops[] = {
 		.doit = nl80211_btcoex_notify_antenna_config,
 		.policy = nl80211_policy,
 		.flags = GENL_ADMIN_PERM,
+		.internal_flags = NL80211_FLAG_NEED_NETDEV |
+				  NL80211_FLAG_NEED_RTNL,
+	},
+	{
+		.cmd = NL80211_CMD_BTCOEX_BT_VENDOR,
+		.doit = nl80211_btcoex_notify_bt_vendor,
+		.policy = nl80211_policy,
+		.flags = GENL_ADMIN_PERM,
+		.internal_flags = NL80211_FLAG_NEED_NETDEV |
+				  NL80211_FLAG_NEED_RTNL,
+	},
+	{
+		.cmd = NL80211_CMD_BTCOEX,
+		.doit = nl80211_btcoex_notify,
+		.policy = nl80211_policy,
+		/* can be retrieved by unprivileged users */
 		.internal_flags = NL80211_FLAG_NEED_NETDEV |
 				  NL80211_FLAG_NEED_RTNL,
 	},

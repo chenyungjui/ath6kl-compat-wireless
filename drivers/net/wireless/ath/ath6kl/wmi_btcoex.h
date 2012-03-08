@@ -117,7 +117,9 @@ struct wmi_set_btcoex_fe_antenna_cmd {
 int ath6kl_wmi_set_btcoex_bt_op_status(struct wmi *wmi, u8 op_id, bool flag);
 int ath6kl_wmi_set_btcoex_sco_op(struct wmi *wmi, bool esco, u32 tx_interval,
 				 u32 tx_pkt_len);
-int ath6kl_wmi_set_btcoex_a2dp_op(struct wmi *wmi, u32 role, u32 ver);
+int ath6kl_wmi_set_btcoex_a2dp_op(struct wmi *wmi, u32 role, u32 ver, u32 ven);
 int ath6kl_wmi_set_btcoex_set_colocated_bt(struct wmi *wmi, u8 dev_type);
 int ath6kl_wmi_set_btcoex_set_fe_antenna(struct wmi *wmi, u8 antenna_type);
+int ath6kl_wmi_send_btcoex_cmd(struct wmi *wmi,
+				u8 *buf, int len);
 #endif /* WMI_BTCOEX_H */

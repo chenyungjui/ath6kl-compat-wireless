@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2010-2011 Atheros Communications Inc.
+ * Copyright (c) 2011-2012 Qualcomm Atheros, Inc.
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -23,6 +24,12 @@
 #include <linux/sched.h>
 #include <linux/circ_buf.h>
 #include <net/cfg80211.h>
+#ifdef CONFIG_HAS_EARLYSUSPEND
+#include <linux/earlysuspend.h>
+#endif
+#ifdef CONFIG_HAS_WAKELOCK
+#include <linux/wakelock.h>
+#endif
 #include "htc.h"
 #include "wmi.h"
 #include "bmi.h"
@@ -45,6 +52,10 @@
 #define ATH6KL_MAX_ENDPOINTS   4
 #define MAX_NODE_NUM           15
 
+#define ATH6KL_APSD_ALL_FRAME		0xFFFF
+#define ATH6KL_APSD_NUM_OF_AC		0x4
+#define ATH6KL_APSD_FRAME_MASK		0xF
+
 /* Extra bytes for htc header alignment */
 #define ATH6KL_HTC_ALIGN_BYTES 3
 
@@ -56,8 +67,12 @@
 #define MAX_DEFAULT_SEND_QUEUE_DEPTH      (MAX_DEF_COOKIE_NUM / WMM_NUM_AC)
 
 #define DISCON_TIMER_INTVAL               10000  /* in msec */
-#define A_DEFAULT_LISTEN_INTERVAL         100
-#define A_MAX_WOW_LISTEN_INTERVAL         1000
+
+/* Channel dwell time in fg scan */
+#define ATH6KL_FG_SCAN_INTERVAL         50 /* in ms */
+
+/* Channel dwell time in fg scan */
+#define ATH6KL_FG_SCAN_INTERVAL		50 /* in ms */
 
 /* includes also the null byte */
 #define ATH6KL_FIRMWARE_MAGIC               "QCA-ATH6KL"
@@ -98,45 +113,49 @@ struct ath6kl_fw_ie {
 	u8 data[0];
 };
 
+#define ATH6KL_FW_API2_FILE "fw-2.bin"
+#define ATH6KL_FW_API3_FILE "fw-3.bin"
+
 /* AR6003 1.0 definitions */
 #define AR6003_HW_1_0_VERSION                 0x300002ba
 
 /* AR6003 2.0 definitions */
 #define AR6003_HW_2_0_VERSION                 0x30000384
 #define AR6003_HW_2_0_PATCH_DOWNLOAD_ADDRESS  0x57e910
-#define AR6003_HW_2_0_OTP_FILE "ath6k/AR6003/hw2.0/otp.bin.z77"
-#define AR6003_HW_2_0_FIRMWARE_FILE "ath6k/AR6003/hw2.0/athwlan.bin.z77"
-#define AR6003_HW_2_0_TCMD_FIRMWARE_FILE "ath6k/AR6003/hw2.0/athtcmd_ram.bin"
-#define AR6003_HW_2_0_PATCH_FILE "ath6k/AR6003/hw2.0/data.patch.bin"
-#define AR6003_HW_2_0_FIRMWARE_2_FILE "ath6k/AR6003/hw2.0/fw-2.bin"
+#define AR6003_HW_2_0_FW_DIR			"ath6k/AR6003/hw2.0"
+#define AR6003_HW_2_0_OTP_FILE			"otp.bin.z77"
+#define AR6003_HW_2_0_FIRMWARE_FILE		"athwlan.bin.z77"
+#define AR6003_HW_2_0_TCMD_FIRMWARE_FILE	"athtcmd_ram.bin"
+#define AR6003_HW_2_0_PATCH_FILE		"data.patch.bin"
 #define AR6003_HW_2_0_BOARD_DATA_FILE "ath6k/AR6003/hw2.0/bdata.bin"
 #define AR6003_HW_2_0_DEFAULT_BOARD_DATA_FILE \
 			"ath6k/AR6003/hw2.0/bdata.SD31.bin"
 
 /* AR6003 3.0 definitions */
 #define AR6003_HW_2_1_1_VERSION                 0x30000582
-#define AR6003_HW_2_1_1_OTP_FILE "ath6k/AR6003/hw2.1.1/otp.bin"
-#define AR6003_HW_2_1_1_FIRMWARE_FILE "ath6k/AR6003/hw2.1.1/athwlan.bin"
-#define AR6003_HW_2_1_1_TCMD_FIRMWARE_FILE \
-			"ath6k/AR6003/hw2.1.1/athtcmd_ram.bin"
-#define AR6003_HW_2_1_1_PATCH_FILE "ath6k/AR6003/hw2.1.1/data.patch.bin"
-#define AR6003_HW_2_1_1_FIRMWARE_2_FILE "ath6k/AR6003/hw2.1.1/fw-2.bin"
+#define AR6003_HW_2_1_1_FW_DIR			"ath6k/AR6003/hw2.1.1"
+#define AR6003_HW_2_1_1_OTP_FILE		"otp.bin"
+#define AR6003_HW_2_1_1_FIRMWARE_FILE		"athwlan.bin"
+#define AR6003_HW_2_1_1_TCMD_FIRMWARE_FILE	"athtcmd_ram.bin"
+#define AR6003_HW_2_1_1_UTF_FIRMWARE_FILE	"utf.bin"
+#define AR6003_HW_2_1_1_TESTSCRIPT_FILE	"nullTestFlow.bin"
+#define AR6003_HW_2_1_1_PATCH_FILE		"data.patch.bin"
 #define AR6003_HW_2_1_1_BOARD_DATA_FILE "ath6k/AR6003/hw2.1.1/bdata.bin"
 #define AR6003_HW_2_1_1_DEFAULT_BOARD_DATA_FILE	\
 			"ath6k/AR6003/hw2.1.1/bdata.SD31.bin"
 
 /* AR6004 1.0 definitions */
 #define AR6004_HW_1_0_VERSION                 0x30000623
-#define AR6004_HW_1_0_FIRMWARE_2_FILE         "ath6k/AR6004/hw1.0/fw-2.bin"
-#define AR6004_HW_1_0_FIRMWARE_FILE           "ath6k/AR6004/hw1.0/fw.ram.bin"
+#define AR6004_HW_1_0_FW_DIR			"ath6k/AR6004/hw1.0"
+#define AR6004_HW_1_0_FIRMWARE_FILE		"fw.ram.bin"
 #define AR6004_HW_1_0_BOARD_DATA_FILE         "ath6k/AR6004/hw1.0/bdata.bin"
 #define AR6004_HW_1_0_DEFAULT_BOARD_DATA_FILE \
 	"ath6k/AR6004/hw1.0/bdata.DB132.bin"
 
 /* AR6004 1.1 definitions */
 #define AR6004_HW_1_1_VERSION                 0x30000001
-#define AR6004_HW_1_1_FIRMWARE_2_FILE         "ath6k/AR6004/hw1.1/fw-2.bin"
-#define AR6004_HW_1_1_FIRMWARE_FILE           "ath6k/AR6004/hw1.1/fw.ram.bin"
+#define AR6004_HW_1_1_FW_DIR			"ath6k/AR6004/hw1.1"
+#define AR6004_HW_1_1_FIRMWARE_FILE		"fw.ram.bin"
 #define AR6004_HW_1_1_BOARD_DATA_FILE         "ath6k/AR6004/hw1.1/bdata.bin"
 #define AR6004_HW_1_1_DEFAULT_BOARD_DATA_FILE \
 	"ath6k/AR6004/hw1.1/bdata.DB132.bin"
@@ -145,6 +164,8 @@ struct ath6kl_fw_ie {
 #define STA_PS_AWAKE		BIT(0)
 #define	STA_PS_SLEEP		BIT(1)
 #define	STA_PS_POLLED		BIT(2)
+#define STA_PS_APSD_TRIGGER     BIT(3)
+#define STA_PS_APSD_EOSP        BIT(4)
 
 /* HTC TX packet tagging definitions */
 #define ATH6KL_CONTROL_PKT_TAG    HTC_TX_PACKET_TAG_USER_DEFINED
@@ -174,6 +195,11 @@ struct ath6kl_fw_ie {
 
 #define MBOX_YIELD_LIMIT 99
 
+#define ATH6KL_DEFAULT_LISTEN_INTVAL	100 /* in TUs */
+#define ATH6KL_DEFAULT_BMISS_TIME	1500
+#define ATH6KL_MAX_WOW_LISTEN_INTVAL	300 /* in TUs */
+#define ATH6KL_MAX_BMISS_TIME		5000
+
 /* configuration lags */
 /*
  * ATH6KL_CONF_IGNORE_ERP_BARKER: Ignore the barker premable in
@@ -187,7 +213,7 @@ struct ath6kl_fw_ie {
 #define ATH6KL_CONF_IGNORE_PS_FAIL_EVT_IN_SCAN  BIT(1)
 #define ATH6KL_CONF_ENABLE_11N			BIT(2)
 #define ATH6KL_CONF_ENABLE_TX_BURST		BIT(3)
-#define ATH6KL_CONF_SUSPEND_CUTPOWER		BIT(4)
+#define ATH6KL_CONF_UART_DEBUG			BIT(4)
 
 enum wlan_low_pwr_state {
 	WLAN_POWER_STATE_ON,
@@ -232,14 +258,19 @@ struct rxtid_stats {
 	u32 num_bar;
 };
 
-struct aggr_info {
+struct aggr_info_conn {
 	u8 aggr_sz;
 	u8 timer_scheduled;
 	struct timer_list timer;
 	struct net_device *dev;
 	struct rxtid rx_tid[NUM_OF_TIDS];
-	struct sk_buff_head free_q;
 	struct rxtid_stats stat[NUM_OF_TIDS];
+	struct aggr_info *aggr_info;
+};
+
+struct aggr_info {
+	struct aggr_info_conn *aggr_conn;
+	struct sk_buff_head rx_amsdu_freeq;
 };
 
 struct ath6kl_wep_key {
@@ -271,6 +302,16 @@ struct ath6kl_cookie {
 	struct ath6kl_cookie *arc_list_next;
 };
 
+struct mgmt_buff {
+	struct list_head list;
+	u32 freq;
+	u32 wait;
+	u32 id;
+	bool no_cck;
+	size_t len;
+	u8 buf[1];
+};
+
 struct ath6kl_sta {
 	u16 sta_flags;
 	u8 mac[ETH_ALEN];
@@ -281,6 +322,11 @@ struct ath6kl_sta {
 	u8 wpa_ie[ATH6KL_MAX_IE];
 	struct sk_buff_head psq;
 	spinlock_t psq_lock;
+	struct list_head mgmt_psq;
+	size_t mgmt_psq_len;
+	u8 apsd_info;
+	struct sk_buff_head apsdq;
+	struct aggr_info_conn *aggr_conn;
 };
 
 struct ath6kl_version {
@@ -412,10 +458,18 @@ struct ath6kl_req_key {
 struct ath6kl_btcoex {
 	u32 acl_role; /* Master/slave role of Bluetooth ACL link */
 	u32 remote_lmp_ver; /* LMP version of the remote device. */
+	u32 bt_vendor; /* Keeps track of the Bluetooth chip vendor */
 };
 enum ath6kl_hif_type {
 	ATH6KL_HIF_TYPE_SDIO,
 	ATH6KL_HIF_TYPE_USB,
+};
+
+/* Max number of filters that hw supports */
+#define ATH6K_MAX_MC_FILTERS_PER_LIST 7
+struct ath6kl_mc_filter {
+	struct list_head list;
+	char hw_addr[ATH6KL_MCAST_FILTER_MAC_ADDR_SIZE];
 };
 
 /*
@@ -436,6 +490,7 @@ enum ath6kl_vif_state {
 	DTIM_PERIOD_AVAIL,
 	WLAN_ENABLED,
 	STATS_UPDATE_PEND,
+	HOST_SLEEP_MODE_CMD_PROCESSED,
 };
 
 struct ath6kl_vif {
@@ -478,9 +533,15 @@ struct ath6kl_vif {
 	bool probe_req_report;
 	u16 next_chan;
 	u16 assoc_bss_beacon_int;
+	u16 listen_intvl_t;
+	u16 bmiss_time_t;
+	u16 bg_scan_period;
+	u8 scan_ctrl_flag;
 	u8 assoc_bss_dtim_period;
 	struct net_device_stats net_stats;
 	struct target_stats target_stats;
+
+	struct list_head mc_filter;
 };
 
 #define WOW_LIST_ID		0
@@ -503,6 +564,8 @@ enum ath6kl_dev_state {
 enum ath6kl_state {
 	ATH6KL_STATE_OFF,
 	ATH6KL_STATE_ON,
+	ATH6KL_STATE_SUSPENDING,
+	ATH6KL_STATE_RESUMING,
 	ATH6KL_STATE_DEEPSLEEP,
 	ATH6KL_STATE_CUTPOWER,
 	ATH6KL_STATE_WOW,
@@ -532,8 +595,6 @@ struct ath6kl {
 	u8 avail_idx_map;
 	spinlock_t lock;
 	struct semaphore sem;
-	u16 listen_intvl_b;
-	u16 listen_intvl_t;
 	u8 lrssi_roam_threshold;
 	struct ath6kl_version version;
 	u32 target_type;
@@ -584,17 +645,25 @@ struct ath6kl {
 		u32 board_addr;
 		u32 refclk_hz;
 		u32 uarttx_pin;
+		u32 testscript_addr;
 
-		const char *fw_otp;
-		const char *fw;
-		const char *fw_tcmd;
-		const char *fw_patch;
-		const char *fw_api2;
+		struct ath6kl_hw_fw {
+			const char *dir;
+			const char *otp;
+			const char *fw;
+			const char *tcmd;
+			const char *patch;
+			const char *utf;
+			const char *testscript;
+		} fw;
+
 		const char *fw_board;
 		const char *fw_default_board;
 	} hw;
 
 	u16 conf_flags;
+	u16 suspend_mode;
+	u16 wow2_suspend_mode;
 	wait_queue_head_t event_wq;
 	struct ath6kl_mbox_info mbox_info;
 
@@ -613,6 +682,10 @@ struct ath6kl {
 	u8 *fw_patch;
 	size_t fw_patch_len;
 
+	u8 *fw_testscript;
+	size_t fw_testscript_len;
+
+	unsigned int fw_api;
 	unsigned long fw_capabilities[ATH6KL_CAPABILITY_LEN];
 
 	struct workqueue_struct *ath6kl_wq;
@@ -625,10 +698,12 @@ struct ath6kl {
 
 #ifdef CONFIG_ATH6KL_DEBUG
 	struct {
-		struct circ_buf fwlog_buf;
-		spinlock_t fwlog_lock;
-		void *fwlog_tmp;
+		struct sk_buff_head fwlog_queue;
+		struct completion fwlog_completion;
+		bool fwlog_open;
+
 		u32 fwlog_mask;
+
 		unsigned int dbgfs_diag_reg;
 		u32 diag_reg_addr_wr;
 		u32 diag_reg_val_wr;
@@ -644,6 +719,17 @@ struct ath6kl {
 		u8 disc_timeout;
 	} debug;
 #endif /* CONFIG_ATH6KL_DEBUG */
+
+#ifdef CONFIG_HAS_EARLYSUSPEND
+	struct early_suspend early_suspend;
+	bool screen_off;
+#endif /* CONFIG_HAS_EARLYSUSPEND */
+
+#ifdef CONFIG_HAS_WAKELOCK
+	struct wake_lock wake_lock;
+	struct wake_lock p2p_wake_lock;
+#endif /* CONFIG_HAS_WAKELOCK */
+
 };
 
 static inline struct ath6kl *ath6kl_priv(struct net_device *dev)
@@ -688,7 +774,9 @@ struct ath6kl_cookie *ath6kl_alloc_cookie(struct ath6kl *ar);
 void ath6kl_free_cookie(struct ath6kl *ar, struct ath6kl_cookie *cookie);
 int ath6kl_data_tx(struct sk_buff *skb, struct net_device *dev);
 
-struct aggr_info *aggr_init(struct net_device *dev);
+struct aggr_info *aggr_init(struct ath6kl_vif *vif);
+void aggr_conn_init(struct ath6kl_vif *vif, struct aggr_info *aggr_info,
+		    struct aggr_info_conn *aggr_conn);
 void ath6kl_rx_refill(struct htc_target *target,
 		      enum htc_endpoint_id endpoint);
 void ath6kl_refill_amsdu_rxbufs(struct ath6kl *ar, int count);
@@ -696,7 +784,7 @@ struct htc_packet *ath6kl_alloc_amsdu_rxbuf(struct htc_target *target,
 					    enum htc_endpoint_id endpoint,
 					    int len);
 void aggr_module_destroy(struct aggr_info *aggr_info);
-void aggr_reset_state(struct aggr_info *aggr_info);
+void aggr_reset_state(struct aggr_info_conn *aggr_conn);
 
 struct ath6kl_sta *ath6kl_find_sta(struct ath6kl_vif *vif, u8 * node_addr);
 struct ath6kl_sta *ath6kl_find_sta_by_aid(struct ath6kl *ar, u8 aid);
@@ -712,7 +800,7 @@ void ath6kl_connect_event(struct ath6kl_vif *vif, u16 channel,
 void ath6kl_connect_ap_mode_bss(struct ath6kl_vif *vif, u16 channel);
 void ath6kl_connect_ap_mode_sta(struct ath6kl_vif *vif, u16 aid, u8 *mac_addr,
 				u8 keymgmt, u8 ucipher, u8 auth,
-				u8 assoc_req_len, u8 *assoc_info);
+				u8 assoc_req_len, u8 *assoc_info, u8 apsd_info);
 void ath6kl_disconnect_event(struct ath6kl_vif *vif, u8 reason,
 			     u8 *bssid, u8 assoc_resp_len,
 			     u8 *assoc_info, u16 prot_reason_status);
@@ -741,6 +829,10 @@ struct ath6kl_vif *ath6kl_vif_first(struct ath6kl *ar);
 void ath6kl_cleanup_vif(struct ath6kl_vif *vif, bool wmi_ready);
 int ath6kl_init_hw_start(struct ath6kl *ar);
 int ath6kl_init_hw_stop(struct ath6kl *ar);
-void ath6kl_check_wow_status(struct ath6kl *ar);
+void ath6kl_check_wow_status(struct ath6kl *ar, struct sk_buff *skb,
+			     bool is_event_pkt);
+void ath6kl_sdio_init_msm(void);
+void ath6kl_sdio_exit_msm(void);
+void ath6kl_mangle_mac_address(struct ath6kl *ar);
 
 #endif /* CORE_H */
