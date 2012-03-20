@@ -1,3 +1,4 @@
+ifeq ($(BOARD_HAS_ATH_WLAN), true)
 LOCAL_PATH := $(call my-dir)
 DLKM_DIR := build/dlkm
 
@@ -13,3 +14,4 @@ LOCAL_MODULE_KBUILD_NAME := wlan.ko
 LOCAL_MODULE_TAGS        := eng
 LOCAL_MODULE_PATH        := $(TARGET_OUT)/lib/modules/ath6kl
 include $(DLKM_DIR)/AndroidKernelModule.mk
+endif
