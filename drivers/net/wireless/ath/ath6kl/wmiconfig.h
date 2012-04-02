@@ -1,5 +1,6 @@
 /*
- * Copyright (c) 2012 Qualcomm Atheros, Inc.
+ * Copyright (c) 2011 Atheros Communications Inc.
+ * Copyright (c) 2011-2012 Qualcomm Atheros, Inc.
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -14,22 +15,11 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifndef DEBUG_PRI_H
-#define DEBUG_PRI_H
+#ifndef WMICONFIG_H
+#define WMICONFIG_H
 
-#ifdef CONFIG_ATH6KL_DEBUG
-
-#define ATH6KL_ERR_REPORT_BMISS_MASK  BIT(3)
-
-struct wmi_tgt_err_report_mask {
-	__le32 mask;
-};
-
-struct wmi_tgt_err_report_evt {
-	__le32 err_val;
-} __packed;
-
-int ath6kl_wmi_error_report_event(struct wmi *wmi, u8 *data, int len);
-int ath6kl_init_debugfs_pri(struct ath6kl *ar);
-#endif
+struct sk_buff *ath6kl_wmi_get_buf(u32 size);
+void ath6kl_tm_rx_wmi_event(struct ath6kl *ar, void *buf, size_t buf_len);
+void ath6kl_wmicfg_send_stats(struct ath6kl_vif *vif,
+			      struct target_stats *stats);
 #endif

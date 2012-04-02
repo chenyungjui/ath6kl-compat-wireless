@@ -428,6 +428,7 @@ static int ath6kl_cfg80211_connect(struct wiphy *wiphy, struct net_device *dev,
 	struct ath6kl_vif *vif = netdev_priv(dev);
 	int status;
 	u8 nw_subtype = (ar->p2p) ? SUBTYPE_P2PDEV : SUBTYPE_NONE;
+	u16 interval;
 
 	ath6kl_cfg80211_sscan_disable(vif);
 
@@ -584,10 +585,11 @@ static int ath6kl_cfg80211_connect(struct wiphy *wiphy, struct net_device *dev,
 	vif->reconnect_flag = 0;
 
 	if (vif->nw_type == INFRA_NETWORK) {
+		interval = max(vif->listen_intvl_t,
+			       (u16) ATH6KL_MAX_WOW_LISTEN_INTL);
 		status = ath6kl_wmi_listeninterval_cmd(ar->wmi, vif->fw_vif_idx,
-				max(vif->listen_intvl_t,
-				    (u16)ATH6KL_MAX_WOW_LISTEN_INTVAL),
-				0);
+						       interval,
+						       0);
 		if (status) {
 			ath6kl_err("couldn't set listen intervel\n");
 			up(&ar->sem);
@@ -938,6 +940,8 @@ static int ath6kl_cfg80211_scan(struct wiphy *wiphy, struct net_device *ndev,
 	if (test_bit(CONNECTED, &vif->flags))
 		force_fg_scan = 1;
 
+	vif->scan_req = request;
+
 	if (test_bit(ATH6KL_FW_CAPABILITY_STA_P2PDEV_DUPLEX,
 		    ar->fw_capabilities)) {
 		/*
@@ -966,10 +970,10 @@ static int ath6kl_cfg80211_scan(struct wiphy *wiphy, struct net_device *ndev,
 						ATH6KL_FG_SCAN_INTERVAL,
 						n_channels, channels);
 	}
-	if (ret)
+	if (ret) {
 		ath6kl_err("wmi_startscan_cmd failed\n");
-	else
-		vif->scan_req = request;
+		vif->scan_req = NULL;
+	}
 
 	kfree(channels);
 
@@ -1928,12 +1932,61 @@ static int ath6kl_wow_sta(struct ath6kl *ar, struct ath6kl_vif *vif)
 	return 0;
 }
 
+static int is_hsleep_mode_procsed(struct ath6kl_vif *vif)
+{
+	return test_bit(HOST_SLEEP_MODE_CMD_PROCESSED, &vif->flags);
+}
+
+static bool is_ctrl_ep_empty(struct ath6kl *ar)
+{
+	return !ar->tx_pending[ar->ctrl_ep];
+}
+
+static int ath6kl_cfg80211_host_sleep(struct ath6kl *ar, struct ath6kl_vif *vif)
+{
+	int ret, left;
+
+	clear_bit(HOST_SLEEP_MODE_CMD_PROCESSED, &vif->flags);
+
+	ret = ath6kl_wmi_set_host_sleep_mode_cmd(ar->wmi, vif->fw_vif_idx,
+						 ATH6KL_HOST_MODE_ASLEEP);
+	if (ret)
+		return ret;
+
+	left = wait_event_interruptible_timeout(ar->event_wq,
+						is_hsleep_mode_procsed(vif),
+						WMI_TIMEOUT);
+	if (left == 0) {
+		ath6kl_warn("timeout, didn't get host sleep cmd processed event\n");
+		ret = -ETIMEDOUT;
+	} else if (left < 0) {
+		ath6kl_warn("error while waiting for host sleep cmd processed event %d\n",
+			    left);
+		ret = left;
+	}
+
+	if (ar->tx_pending[ar->ctrl_ep]) {
+		left = wait_event_interruptible_timeout(ar->event_wq,
+							is_ctrl_ep_empty(ar),
+							WMI_TIMEOUT);
+		if (left == 0) {
+			ath6kl_warn("clear wmi ctrl data timeout\n");
+			ret = -ETIMEDOUT;
+		} else if (left < 0) {
+			ath6kl_warn("clear wmi ctrl data failed: %d\n", left);
+			ret = left;
+		}
+	}
+
+	return ret;
+}
+
 static int ath6kl_wow_suspend(struct ath6kl *ar, struct cfg80211_wowlan *wow)
 {
 	struct in_device *in_dev;
 	struct in_ifaddr *ifa;
 	struct ath6kl_vif *vif;
-	int ret, left;
+	int ret;
 	u32 filter = 0;
 	u16 i, bmiss_time;
 	u8 index = 0;
@@ -1972,24 +2025,28 @@ static int ath6kl_wow_suspend(struct ath6kl *ar, struct cfg80211_wowlan *wow)
 	if (ret)
 		return ret;
 
+	netif_stop_queue(vif->ndev);
+
 	if (vif->nw_type != AP_NETWORK) {
 		ret = ath6kl_wmi_listeninterval_cmd(ar->wmi, vif->fw_vif_idx,
-				ATH6KL_MAX_WOW_LISTEN_INTVAL, 0);
+						    ATH6KL_MAX_WOW_LISTEN_INTL,
+						    0);
 		if (ret)
 			return ret;
 
 		/* Set listen interval x 15 times as bmiss time */
-		bmiss_time = ATH6KL_MAX_WOW_LISTEN_INTVAL * 15;
+		bmiss_time = ATH6KL_MAX_WOW_LISTEN_INTL * 15;
 		if (bmiss_time > ATH6KL_MAX_BMISS_TIME)
 			bmiss_time = ATH6KL_MAX_BMISS_TIME;
 
 		ret = ath6kl_wmi_bmisstime_cmd(ar->wmi, vif->fw_vif_idx,
-				bmiss_time, 0);
+					       bmiss_time, 0);
 		if (ret)
 			return ret;
 
 		ret = ath6kl_wmi_scanparams_cmd(ar->wmi, vif->fw_vif_idx,
-				0xFFFF, 0, 0xFFFF, 0, 0, 0, 0, 0, 0, 0);
+						0xFFFF, 0, 0xFFFF, 0, 0, 0,
+						0, 0, 0, 0);
 		if (ret)
 			return ret;
 	}
@@ -2030,39 +2087,11 @@ skip_arp:
 	if (ret)
 		return ret;
 
-	clear_bit(HOST_SLEEP_MODE_CMD_PROCESSED, &vif->flags);
-
-	ret = ath6kl_wmi_set_host_sleep_mode_cmd(ar->wmi, vif->fw_vif_idx,
-						 ATH6KL_HOST_MODE_ASLEEP);
+	ret = ath6kl_cfg80211_host_sleep(ar, vif);
 	if (ret)
 		return ret;
 
-	left = wait_event_interruptible_timeout(ar->event_wq,
-			test_bit(HOST_SLEEP_MODE_CMD_PROCESSED, &vif->flags),
-			WMI_TIMEOUT);
-	if (left == 0) {
-		ath6kl_warn("timeout, didn't get host sleep cmd "
-			    "processed event\n");
-		ret = -ETIMEDOUT;
-	} else if (left < 0) {
-		ath6kl_warn("error while waiting for host sleep cmd "
-			    "processed event %d\n", left);
-		ret = left;
-	}
-
-	if (ar->tx_pending[ar->ctrl_ep]) {
-		left = wait_event_interruptible_timeout(ar->event_wq,
-				ar->tx_pending[ar->ctrl_ep] == 0, WMI_TIMEOUT);
-		if (left == 0) {
-			ath6kl_warn("clear wmi ctrl data timeout\n");
-			ret = -ETIMEDOUT;
-		} else if (left < 0) {
-			ath6kl_warn("clear wmi ctrl data failed: %d\n", left);
-			ret = left;
-		}
-	}
-
-	return ret;
+	return 0;
 }
 
 static int ath6kl_wow_resume(struct ath6kl *ar)
@@ -2090,37 +2119,32 @@ static int ath6kl_wow_resume(struct ath6kl *ar)
 
 	if (vif->nw_type != AP_NETWORK) {
 		ret = ath6kl_wmi_scanparams_cmd(ar->wmi, vif->fw_vif_idx,
-				0, 0, 0, 0, 0, 0, 3, 0, 0, 0);
+						0, 0, 0, 0, 0, 0, 3, 0, 0, 0);
 		if (ret)
 			return ret;
 
 		ret = ath6kl_wmi_listeninterval_cmd(ar->wmi, vif->fw_vif_idx,
-				vif->listen_intvl_t, 0);
+						    vif->listen_intvl_t, 0);
 		if (ret)
 			return ret;
 
 		ret = ath6kl_wmi_bmisstime_cmd(ar->wmi, vif->fw_vif_idx,
-				vif->bmiss_time_t, 0);
+					       vif->bmiss_time_t, 0);
 		if (ret)
 			return ret;
 	}
 
 	ar->state = ATH6KL_STATE_ON;
 
-	/* Wake up netdev queue if it's stopped in ath6kl_data_tx() */
-	if (test_bit(NETQ_STOPPED, &vif->flags)) {
-		clear_bit(NETQ_STOPPED, &vif->flags);
-		netif_wake_queue(vif->ndev);
-	}
+	netif_wake_queue(vif->ndev);
 
 	return 0;
 }
 
-static int ath6kl_deepsleep_suspend(struct ath6kl *ar,
-				    struct cfg80211_wowlan *wow)
+static int ath6kl_cfg80211_deepsleep_suspend(struct ath6kl *ar)
 {
 	struct ath6kl_vif *vif;
-	int ret, left;
+	int ret;
 
 	vif = ath6kl_vif_first(ar);
 	if (!vif)
@@ -2129,58 +2153,48 @@ static int ath6kl_deepsleep_suspend(struct ath6kl *ar,
 	if (!ath6kl_cfg80211_ready(vif))
 		return -EIO;
 
+	ath6kl_cfg80211_stop_all(ar);
+
+	/* Save the current power mode before enabling power save */
+	ar->wmi->saved_pwr_mode = ar->wmi->pwr_mode;
+
+	ret = ath6kl_wmi_powermode_cmd(ar->wmi, 0, REC_POWER);
+	if (ret)
+		return ret;
+
+	/* Disable WOW mode */
 	ret = ath6kl_wmi_set_wow_mode_cmd(ar->wmi, vif->fw_vif_idx,
-				  ATH6KL_WOW_MODE_DISABLE,
-				  0, 0);
+					  ATH6KL_WOW_MODE_DISABLE,
+					  0, 0);
 	if (ret)
 		return ret;
 
 	/* Flush all non control pkts in TX path */
 	ath6kl_tx_data_cleanup(ar);
 
-	clear_bit(HOST_SLEEP_MODE_CMD_PROCESSED, &vif->flags);
-
-	ret = ath6kl_wmi_set_host_sleep_mode_cmd(ar->wmi, vif->fw_vif_idx,
-					 ATH6KL_HOST_MODE_ASLEEP);
+	ret = ath6kl_cfg80211_host_sleep(ar, vif);
 	if (ret)
 		return ret;
 
-	left = wait_event_interruptible_timeout(ar->event_wq,
-		test_bit(HOST_SLEEP_MODE_CMD_PROCESSED, &vif->flags),
-		WMI_TIMEOUT);
-	if (left == 0) {
-		ath6kl_warn("timeout, didn't get host sleep cmd "
-				"processed event\n");
-		ret = -ETIMEDOUT;
-	} else if (left < 0) {
-		ath6kl_warn("error while waiting for host sleep cmd "
-				"processed event %d\n", left);
-		ret = left;
-	}
-
-	if (ar->tx_pending[ar->ctrl_ep]) {
-		left = wait_event_interruptible_timeout(ar->event_wq,
-				ar->tx_pending[ar->ctrl_ep] == 0, WMI_TIMEOUT);
-		if (left == 0) {
-			ath6kl_warn("clear wmi ctrl data timeout\n");
-			ret = -ETIMEDOUT;
-		} else if (left < 0) {
-			ath6kl_warn("clear wmi ctrl data failed: %d\n", left);
-			ret = left;
-		}
-	}
-
-	return ret;
+	return 0;
 }
 
-static int ath6kl_deepsleep_resume(struct ath6kl *ar)
+static int ath6kl_cfg80211_deepsleep_resume(struct ath6kl *ar)
 {
 	struct ath6kl_vif *vif;
 	int ret;
 
 	vif = ath6kl_vif_first(ar);
+
 	if (!vif)
 		return -EIO;
+
+	if (ar->wmi->pwr_mode != ar->wmi->saved_pwr_mode) {
+		ret = ath6kl_wmi_powermode_cmd(ar->wmi, 0,
+					       ar->wmi->saved_pwr_mode);
+		if (ret)
+			return ret;
+	}
 
 	ret = ath6kl_wmi_set_host_sleep_mode_cmd(ar->wmi, vif->fw_vif_idx,
 						 ATH6KL_HOST_MODE_AWAKE);
@@ -2191,13 +2205,12 @@ static int ath6kl_deepsleep_resume(struct ath6kl *ar)
 
 	/* Reset scan parameter to default values */
 	ret = ath6kl_wmi_scanparams_cmd(ar->wmi, vif->fw_vif_idx,
-			0, 0, 0, 0, 0, 0, 3, 0, 0, 0);
+					0, 0, 0, 0, 0, 0, 3, 0, 0, 0);
 	if (ret)
 		return ret;
 
 	return 0;
 }
-
 
 int ath6kl_cfg80211_suspend(struct ath6kl *ar,
 			    enum ath6kl_cfg_suspend_mode mode,
@@ -2221,23 +2234,15 @@ int ath6kl_cfg80211_suspend(struct ath6kl *ar,
 			ar->state = prev_state;
 			return ret;
 		}
+
 		ar->state = ATH6KL_STATE_WOW;
 		break;
 
 	case ATH6KL_CFG_SUSPEND_DEEPSLEEP:
 
-		ath6kl_cfg80211_stop_all(ar);
+		ath6kl_dbg(ATH6KL_DBG_SUSPEND, "deep sleep suspend\n");
 
-		/* save the current power mode before enabling power save */
-		ar->wmi->saved_pwr_mode = ar->wmi->pwr_mode;
-
-		ret = ath6kl_wmi_powermode_cmd(ar->wmi, 0, REC_POWER);
-		if (ret) {
-			ath6kl_warn("wmi powermode command failed during suspend: %d\n",
-				    ret);
-		}
-
-		ret = ath6kl_deepsleep_suspend(ar, wow);
+		ret = ath6kl_cfg80211_deepsleep_suspend(ar);
 		if (ret) {
 			ath6kl_err("deepsleep suspend failed: %d\n", ret);
 			return ret;
@@ -2300,21 +2305,13 @@ int ath6kl_cfg80211_resume(struct ath6kl *ar)
 		break;
 
 	case ATH6KL_STATE_DEEPSLEEP:
-		if (ar->wmi->pwr_mode != ar->wmi->saved_pwr_mode) {
-			ret = ath6kl_wmi_powermode_cmd(ar->wmi, 0,
-						       ar->wmi->saved_pwr_mode);
-			if (ret) {
-				ath6kl_warn("wmi powermode command failed during resume: %d\n",
-					    ret);
-			}
-		}
+		ath6kl_dbg(ATH6KL_DBG_SUSPEND, "deep sleep resume\n");
 
-		ret = ath6kl_deepsleep_resume(ar);
+		ret = ath6kl_cfg80211_deepsleep_resume(ar);
 		if (ret) {
-			ath6kl_warn("deepsleep resume failed: %d\n", ret);
+			ath6kl_warn("deep sleep resume failed: %d\n", ret);
 			return ret;
 		}
-
 		break;
 
 	case ATH6KL_STATE_CUTPOWER:
@@ -2775,24 +2772,23 @@ static int ath6kl_send_go_probe_resp(struct ath6kl_vif *vif,
 	return ret;
 }
 
-static bool ath6kl_mgmt_powersave_ap(struct ath6kl *ar,
-				u32 id,
-				u32 freq,
-				u32 wait,
-				const u8 *buf,
-				size_t len,
-				bool *more_data,
-				bool no_cck)
+static bool ath6kl_mgmt_powersave_ap(struct ath6kl_vif *vif,
+				     u32 id,
+				     u32 freq,
+				     u32 wait,
+				     const u8 *buf,
+				     size_t len,
+				     bool *more_data,
+				     bool no_cck)
 {
 	struct ieee80211_mgmt *mgmt;
-	struct ath6kl_sta *conn = NULL;
+	struct ath6kl_sta *conn;
 	bool is_psq_empty = false;
-	struct mgmt_buff *mgmt_buf;
+	struct ath6kl_mgmt_buff *mgmt_buf;
 	size_t mgmt_buf_size;
-	struct ath6kl_vif *vif;
+	struct ath6kl *ar = vif->ar;
 
-	vif = ath6kl_vif_first(ar);
-	mgmt = (struct ieee80211_mgmt *)buf;
+	mgmt = (struct ieee80211_mgmt *) buf;
 	if (is_multicast_ether_addr(mgmt->da))
 		return false;
 
@@ -2803,7 +2799,7 @@ static bool ath6kl_mgmt_powersave_ap(struct ath6kl *ar,
 	if (conn->sta_flags & STA_PS_SLEEP) {
 		if (!(conn->sta_flags & STA_PS_POLLED)) {
 			/* Queue the frames if the STA is sleeping */
-			mgmt_buf_size = len + sizeof(struct mgmt_buff) - 1;
+			mgmt_buf_size = len + sizeof(struct ath6kl_mgmt_buff);
 			mgmt_buf = kmalloc(mgmt_buf_size, GFP_KERNEL);
 			if (!mgmt_buf)
 				return false;
@@ -2829,7 +2825,7 @@ static bool ath6kl_mgmt_powersave_ap(struct ath6kl *ar,
 			 */
 			if (is_psq_empty)
 				ath6kl_wmi_set_pvb_cmd(ar->wmi, vif->fw_vif_idx,
-						conn->aid, 1);
+						       conn->aid, 1);
 			return true;
 		}
 
@@ -2841,6 +2837,21 @@ static bool ath6kl_mgmt_powersave_ap(struct ath6kl *ar,
 		if (!skb_queue_empty(&conn->psq) || (conn->mgmt_psq_len != 0))
 			*more_data = true;
 		spin_unlock_bh(&conn->psq_lock);
+	}
+
+	return false;
+}
+
+/* Check if SSID length is greater than DIRECT- */
+static bool ath6kl_is_p2p_go_ssid(const u8 *buf, size_t len)
+{
+	const struct ieee80211_mgmt *mgmt;
+	mgmt = (const struct ieee80211_mgmt *) buf;
+
+	/* variable[1] contains the SSID tag length */
+	if (buf + len >= &mgmt->u.probe_resp.variable[1] &&
+	    (mgmt->u.probe_resp.variable[1] > P2P_WILDCARD_SSID_LEN)) {
+		return true;
 	}
 
 	return false;
@@ -2860,11 +2871,11 @@ static int ath6kl_mgmt_tx(struct wiphy *wiphy, struct net_device *dev,
 	bool more_data, queued;
 
 	mgmt = (const struct ieee80211_mgmt *) buf;
-	if (buf + len >= mgmt->u.probe_resp.variable &&
-	    vif->nw_type == AP_NETWORK && test_bit(CONNECTED, &vif->flags) &&
-	    ieee80211_is_probe_resp(mgmt->frame_control)) {
+	if (vif->nw_type == AP_NETWORK && test_bit(CONNECTED, &vif->flags) &&
+	    ieee80211_is_probe_resp(mgmt->frame_control) &&
+	    ath6kl_is_p2p_go_ssid(buf, len)) {
 		/*
-		 * Send Probe Response frame in AP mode using a separate WMI
+		 * Send Probe Response frame in GO mode using a separate WMI
 		 * command to allow the target to fill in the generic IEs.
 		 */
 		*cookie = 0; /* TX status not supported */
@@ -2885,7 +2896,7 @@ static int ath6kl_mgmt_tx(struct wiphy *wiphy, struct net_device *dev,
 
 	/* AP mode Power saving processing */
 	if (vif->nw_type == AP_NETWORK) {
-		queued = ath6kl_mgmt_powersave_ap(ar,
+		queued = ath6kl_mgmt_powersave_ap(vif,
 					id, chan->center_freq,
 					wait, buf,
 					len, &more_data, no_cck);
@@ -2893,22 +2904,9 @@ static int ath6kl_mgmt_tx(struct wiphy *wiphy, struct net_device *dev,
 			return 0;
 	}
 
-	if (test_bit(ATH6KL_FW_CAPABILITY_STA_P2PDEV_DUPLEX,
-		    ar->fw_capabilities)) {
-		/*
-		 * If capable of doing P2P mgmt operations using
-		 * station interface, send additional information like
-		 * supported rates to advertise and xmit rates for
-		 * probe requests
-		 */
-		return ath6kl_wmi_send_mgmt_cmd(ar->wmi, vif->fw_vif_idx, id,
-						chan->center_freq, wait,
-						buf, len, no_cck);
-	} else {
-		return ath6kl_wmi_send_action_cmd(ar->wmi, vif->fw_vif_idx, id,
-						  chan->center_freq, wait,
-						  buf, len);
-	}
+	return ath6kl_wmi_send_mgmt_cmd(ar->wmi, vif->fw_vif_idx, id,
+					chan->center_freq, wait,
+					buf, len, no_cck);
 }
 
 static void ath6kl_mgmt_frame_register(struct wiphy *wiphy,
@@ -2944,6 +2942,8 @@ static int ath6kl_cfg80211_sscan_start(struct wiphy *wiphy,
 
 	if (vif->sme_state != SME_DISCONNECTED)
 		return -EBUSY;
+
+	ath6kl_cfg80211_scan_complete_event(vif, true);
 
 	for (i = 0; i < ar->wiphy->max_sched_scan_ssids; i++) {
 		ath6kl_wmi_probedssid_cmd(ar->wmi, vif->fw_vif_idx,
@@ -3332,10 +3332,10 @@ struct net_device *ath6kl_interface_add(struct ath6kl *ar, char *name,
 	vif->wdev.iftype = type;
 	vif->fw_vif_idx = fw_vif_idx;
 	vif->nw_type = vif->next_mode = nw_type;
-	vif->listen_intvl_t = ATH6KL_DEFAULT_LISTEN_INTVAL;
-	vif->bmiss_time_t = ATH6KL_DEFAULT_BMISS_TIME;
 	vif->bg_scan_period = 0;
 	vif->scan_ctrl_flag = 0;
+	vif->listen_intvl_t = ATH6KL_DEFAULT_LISTEN_INTVAL;
+	vif->bmiss_time_t = ATH6KL_DEFAULT_BMISS_TIME;
 
 	memcpy(ndev->dev_addr, ar->mac_addr, ETH_ALEN);
 	if (fw_vif_idx != 0)

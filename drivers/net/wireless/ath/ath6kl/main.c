@@ -20,6 +20,7 @@
 #include "cfg80211.h"
 #include "target.h"
 #include "debug.h"
+#include "wmiconfig.h"
 
 struct ath6kl_sta *ath6kl_find_sta(struct ath6kl_vif *vif, u8 *node_addr)
 {
@@ -81,20 +82,22 @@ static void ath6kl_add_new_sta(struct ath6kl_vif *vif, u8 *mac, u16 aid,
 static void ath6kl_sta_cleanup(struct ath6kl *ar, u8 i)
 {
 	struct ath6kl_sta *sta = &ar->sta_list[i];
+	struct ath6kl_mgmt_buff *entry, *tmp;
 
 	/* empty the queued pkts in the PS queue if any */
 	spin_lock_bh(&sta->psq_lock);
 	skb_queue_purge(&sta->psq);
 	skb_queue_purge(&sta->apsdq);
-	spin_unlock_bh(&sta->psq_lock);
+
 	if (sta->mgmt_psq_len != 0) {
-		struct mgmt_buff *entry, *tmp;
 		list_for_each_entry_safe(entry, tmp, &sta->mgmt_psq, list) {
 			kfree(entry);
 		}
 		INIT_LIST_HEAD(&sta->mgmt_psq);
 		sta->mgmt_psq_len = 0;
 	}
+
+	spin_unlock_bh(&sta->psq_lock);
 
 	memset(&ar->ap_stats.sta[sta->aid - 1], 0,
 	       sizeof(struct wmi_per_sta_stat));
@@ -754,6 +757,12 @@ static void ath6kl_update_target_stats(struct ath6kl_vif *vif, u8 *ptr, u32 len)
 	stats->wow_evt_discarded +=
 		le16_to_cpu(tgt_stats->wow_stats.wow_evt_discarded);
 
+	stats->arp_received = le32_to_cpu(tgt_stats->arp_stats.arp_received);
+	stats->arp_replied = le32_to_cpu(tgt_stats->arp_stats.arp_replied);
+	stats->arp_matched = le32_to_cpu(tgt_stats->arp_stats.arp_matched);
+
+	ath6kl_wmicfg_send_stats(vif, stats);
+
 	if (test_bit(STATS_UPDATE_PEND, &vif->flags)) {
 		clear_bit(STATS_UPDATE_PEND, &vif->flags);
 		wake_up(&ar->event_wq);
@@ -817,7 +826,7 @@ void ath6kl_pspoll_event(struct ath6kl_vif *vif, u8 aid)
 	struct sk_buff *skb;
 	bool psq_empty = false;
 	struct ath6kl *ar = vif->ar;
-	struct mgmt_buff *mgmt_buf;
+	struct ath6kl_mgmt_buff *mgmt_buf;
 
 	conn = ath6kl_find_sta_by_aid(ar, aid);
 
@@ -838,35 +847,16 @@ void ath6kl_pspoll_event(struct ath6kl_vif *vif, u8 aid)
 	spin_lock_bh(&conn->psq_lock);
 	if (conn->mgmt_psq_len > 0) {
 		mgmt_buf = list_first_entry(&conn->mgmt_psq,
-					struct mgmt_buff, list);
+					struct ath6kl_mgmt_buff, list);
 		list_del(&mgmt_buf->list);
 		conn->mgmt_psq_len--;
 		spin_unlock_bh(&conn->psq_lock);
 
 		conn->sta_flags |= STA_PS_POLLED;
-		if (test_bit(ATH6KL_FW_CAPABILITY_STA_P2PDEV_DUPLEX,
-						ar->fw_capabilities)) {
-			/*
-			 * If capable of doing P2P mgmt operations using
-			 * station interface, send additional information like
-			 * supported rates to advertise and xmit rates for
-			 * probe requests
-			 */
-			ath6kl_wmi_send_mgmt_cmd(ar->wmi, vif->fw_vif_idx,
-							mgmt_buf->id,
-							mgmt_buf->freq,
-							mgmt_buf->wait,
-							mgmt_buf->buf,
-							mgmt_buf->len,
-							mgmt_buf->no_cck);
-		} else {
-			ath6kl_wmi_send_action_cmd(ar->wmi, vif->fw_vif_idx,
-							mgmt_buf->id,
-							mgmt_buf->freq,
-							mgmt_buf->wait,
-							mgmt_buf->buf,
-							mgmt_buf->len);
-		}
+		ath6kl_wmi_send_mgmt_cmd(ar->wmi, vif->fw_vif_idx,
+					 mgmt_buf->id, mgmt_buf->freq,
+					 mgmt_buf->wait, mgmt_buf->buf,
+					 mgmt_buf->len, mgmt_buf->no_cck);
 		conn->sta_flags &= ~STA_PS_POLLED;
 		kfree(mgmt_buf);
 	} else {

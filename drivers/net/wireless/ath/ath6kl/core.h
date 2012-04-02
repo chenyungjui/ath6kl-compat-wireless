@@ -197,7 +197,7 @@ struct ath6kl_fw_ie {
 
 #define ATH6KL_DEFAULT_LISTEN_INTVAL	100 /* in TUs */
 #define ATH6KL_DEFAULT_BMISS_TIME	1500
-#define ATH6KL_MAX_WOW_LISTEN_INTVAL	300 /* in TUs */
+#define ATH6KL_MAX_WOW_LISTEN_INTL	300 /* in TUs */
 #define ATH6KL_MAX_BMISS_TIME		5000
 
 /* configuration lags */
@@ -214,6 +214,8 @@ struct ath6kl_fw_ie {
 #define ATH6KL_CONF_ENABLE_11N			BIT(2)
 #define ATH6KL_CONF_ENABLE_TX_BURST		BIT(3)
 #define ATH6KL_CONF_UART_DEBUG			BIT(4)
+
+#define P2P_WILDCARD_SSID_LEN			7 /* DIRECT- */
 
 enum wlan_low_pwr_state {
 	WLAN_POWER_STATE_ON,
@@ -302,14 +304,14 @@ struct ath6kl_cookie {
 	struct ath6kl_cookie *arc_list_next;
 };
 
-struct mgmt_buff {
+struct ath6kl_mgmt_buff {
 	struct list_head list;
 	u32 freq;
 	u32 wait;
 	u32 id;
 	bool no_cck;
 	size_t len;
-	u8 buf[1];
+	u8 buf[0];
 };
 
 struct ath6kl_sta {
@@ -533,10 +535,10 @@ struct ath6kl_vif {
 	bool probe_req_report;
 	u16 next_chan;
 	u16 assoc_bss_beacon_int;
-	u16 listen_intvl_t;
-	u16 bmiss_time_t;
 	u16 bg_scan_period;
 	u8 scan_ctrl_flag;
+	u16 listen_intvl_t;
+	u16 bmiss_time_t;
 	u8 assoc_bss_dtim_period;
 	struct net_device_stats net_stats;
 	struct target_stats target_stats;
@@ -663,7 +665,7 @@ struct ath6kl {
 
 	u16 conf_flags;
 	u16 suspend_mode;
-	u16 wow2_suspend_mode;
+	u16 wow_suspend_mode;
 	wait_queue_head_t event_wq;
 	struct ath6kl_mbox_info mbox_info;
 

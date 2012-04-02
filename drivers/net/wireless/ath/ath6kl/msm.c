@@ -1,4 +1,14 @@
+#ifdef CONFIG_ARCH_MSM7X27A
 #include <mach/rpc_pmapp.h>
+#else
+#include <linux/device.h>
+#include <linux/regulator/consumer.h>
+#include <linux/gpio.h>
+#include <linux/err.h>
+#include <linux/platform_device.h>
+/* replace with plaftform specific changes */
+#endif
+
 #include "core.h"
 
 typedef int             A_BOOL;
@@ -19,16 +29,16 @@ typedef u_int32_t    A_UINT32;
 #define PREPACK
 
 typedef PREPACK struct {
-    PREPACK union {
-        A_UINT8 ie[17];
-        A_INT32 wac_status;
-    } POSTPACK info;
+	PREPACK union {
+		A_UINT8 ie[17];
+		A_INT32 wac_status;
+	} POSTPACK info;
 } POSTPACK WMI_GET_WAC_INFO;
 
 struct ar_wep_key {
-    A_UINT8                 arKeyIndex;
-    A_UINT8                 arKeyLen;
-    A_UINT8                 arKey[64];
+	A_UINT8                 arKeyIndex;
+	A_UINT8                 arKeyLen;
+	A_UINT8                 arKey[64];
 } ;
 
 /* BeginMMC polling stuff */
@@ -99,48 +109,56 @@ int android_readwrite_file(const A_CHAR *filename, A_CHAR *rbuf, const A_CHAR *w
 
 static int ath6kl_pm_probe(struct platform_device *pdev)
 {
-    int (*plat_setup_power)(int on);
-    plat_setup_power = pdev->dev.platform_data;
-    printk(KERN_ERR "%s () enter and will invoke power-up sequence\n", __func__);
-    if (plat_setup_power)
-	plat_setup_power(1);
-    return 0;
+#ifdef CONFIG_ARCH_MSM7X27A
+	int (*plat_setup_power)(int on);
+	plat_setup_power = pdev->dev.platform_data;
+	printk(KERN_ERR "%s () enter and will invoke power-up sequence\n", __func__);
+	if (plat_setup_power)
+		plat_setup_power(1);
+#else
+	/* replace with plaftform specific changes */
+#endif
+	return 0;
 }
 
 static int ath6kl_pm_remove(struct platform_device *pdev)
 {
-    int (*plat_setup_power)(int on);
-    plat_setup_power = pdev->dev.platform_data;
-    printk(KERN_ERR "%s () enter and will invoke power-down sequence\n", __func__);
-    if (plat_setup_power)
-	plat_setup_power(0);
-    return 0;
+#ifdef CONFIG_ARCH_MSM7X27A
+	int (*plat_setup_power)(int on);
+	plat_setup_power = pdev->dev.platform_data;
+	printk(KERN_ERR "%s () enter and will invoke power-down sequence\n", __func__);
+	if (plat_setup_power)
+		plat_setup_power(0);
+#else
+	/* replace with plaftform specific changes */
+#endif
+	return 0;
 }
 
 static int ath6kl_pm_suspend(struct platform_device *pdev, pm_message_t state)
 {
-    return 0;
+	return 0;
 }
 
 static inline void *ar6k_priv(struct net_device *dev)
 {
-    return (wdev_priv(dev->ieee80211_ptr));
+	return wdev_priv(dev->ieee80211_ptr);
 }
 
 static int ath6kl_pm_resume(struct platform_device *pdev)
 {
-    return 0;
+	return 0;
 }
 
 
 static struct platform_driver ath6kl_pm_device = {
-    .probe      = ath6kl_pm_probe,
-    .remove     = ath6kl_pm_remove,
-    .suspend    = ath6kl_pm_suspend,
-    .resume     = ath6kl_pm_resume,
-    .driver     = {
-	    .name = "wlan_ar6000_pm_dev",
-    },
+	.probe      = ath6kl_pm_probe,
+	.remove     = ath6kl_pm_remove,
+	.suspend    = ath6kl_pm_suspend,
+	.resume     = ath6kl_pm_resume,
+	.driver     = {
+		.name = "wlan_ar6000_pm_dev",
+	},
 };
 
 void __init ath6kl_sdio_init_msm(void)

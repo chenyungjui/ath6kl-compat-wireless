@@ -287,7 +287,7 @@ int ath6kl_control_tx(void *devt, struct sk_buff *skb,
 	int status = 0;
 	struct ath6kl_cookie *cookie = NULL;
 
-	if (ar->state == ATH6KL_STATE_WOW)
+	if (WARN_ON_ONCE(ar->state == ATH6KL_STATE_WOW))
 		return -EACCES;
 
 	spin_lock_bh(&ar->lock);
@@ -366,8 +366,6 @@ int ath6kl_data_tx(struct sk_buff *skb, struct net_device *dev)
 	}
 
 	if (WARN_ON_ONCE(ar->state != ATH6KL_STATE_ON)) {
-		set_bit(NETQ_STOPPED, &vif->flags);
-		netif_stop_queue(dev);
 		dev_kfree_skb(skb);
 		return 0;
 	}
@@ -1430,45 +1428,33 @@ void ath6kl_rx(struct htc_target *target, struct htc_packet *packet)
 			if (!(conn->sta_flags & STA_PS_SLEEP)) {
 				struct sk_buff *skbuff = NULL;
 				bool is_apsdq_empty;
-				struct mgmt_buff *mgmt_buf;
+				struct ath6kl_mgmt_buff *mgmt;
+				u8 idx;
 
 				spin_lock_bh(&conn->psq_lock);
 				while (conn->mgmt_psq_len > 0) {
-					mgmt_buf = list_first_entry(
+					mgmt = list_first_entry(
 							&conn->mgmt_psq,
-							struct mgmt_buff,
+							struct ath6kl_mgmt_buff,
 							list);
-					list_del(&mgmt_buf->list);
+					list_del(&mgmt->list);
 					conn->mgmt_psq_len--;
 					spin_unlock_bh(&conn->psq_lock);
-					if (test_bit(ATH6KL_FW_CAPABILITY_STA_P2PDEV_DUPLEX,
-									ar->fw_capabilities)) {
-						/*
-						 * If capable of doing P2P mgmt operations using
-						 * station interface, send additional information like
-						 * supported rates to advertise and xmit rates for
-						 * probe requests
-						 */
-						ath6kl_wmi_send_mgmt_cmd(ar->wmi, vif->fw_vif_idx,
-										mgmt_buf->id,
-										mgmt_buf->freq,
-										mgmt_buf->wait,
-										mgmt_buf->buf,
-										mgmt_buf->len,
-										mgmt_buf->no_cck);
-					} else {
-						ath6kl_wmi_send_action_cmd(ar->wmi, vif->fw_vif_idx,
-										mgmt_buf->id,
-										mgmt_buf->freq,
-										mgmt_buf->wait,
-										mgmt_buf->buf,
-										mgmt_buf->len);
-					}
-					kfree(mgmt_buf);
+					idx = vif->fw_vif_idx;
+
+					ath6kl_wmi_send_mgmt_cmd(ar->wmi,
+								 idx,
+								 mgmt->id,
+								 mgmt->freq,
+								 mgmt->wait,
+								 mgmt->buf,
+								 mgmt->len,
+								 mgmt->no_cck);
+
+					kfree(mgmt);
 					spin_lock_bh(&conn->psq_lock);
 				}
 				conn->mgmt_psq_len = 0;
-
 				while ((skbuff = skb_dequeue(&conn->psq))) {
 					spin_unlock_bh(&conn->psq_lock);
 					ath6kl_data_tx(skbuff, vif->ndev);

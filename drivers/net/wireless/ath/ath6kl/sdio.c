@@ -475,7 +475,6 @@ static void ath6kl_sdio_irq_handler(struct sdio_func *func)
 
 	status = ath6kl_hif_intr_bh_handler(ar_sdio->ar);
 	sdio_claim_host(ar_sdio->func);
-
 	atomic_set(&ar_sdio->irq_handling, 0);
 	wake_up(&ar_sdio->irq_wq);
 
@@ -597,7 +596,7 @@ static void ath6kl_sdio_irq_disable(struct ath6kl *ar)
 		sdio_release_host(ar_sdio->func);
 
 		ret = wait_event_interruptible(ar_sdio->irq_wq,
-					       ath6kl_sdio_is_on_irq(ar));
+				ath6kl_sdio_is_on_irq(ar));
 		if (ret)
 			return;
 
@@ -867,11 +866,11 @@ static int ath6kl_sdio_suspend(struct ath6kl *ar, struct cfg80211_wowlan *wow)
 		if (ret && ret != -ENOTCONN)
 			ath6kl_err("wow suspend failed: %d\n", ret);
 
-		if (ret && (!ar->wow2_suspend_mode ||
-			 ar->wow2_suspend_mode == WLAN_POWER_STATE_DEEP_SLEEP))
+		if (ret && (!ar->wow_suspend_mode ||
+		    ar->wow_suspend_mode == WLAN_POWER_STATE_DEEP_SLEEP))
 				try_deepsleep = true;
 		else if (ret &&
-			 ar->wow2_suspend_mode == WLAN_POWER_STATE_CUT_PWR)
+			 ar->wow_suspend_mode == WLAN_POWER_STATE_CUT_PWR)
 				goto cut_pwr;
 		if (!ret)
 			return 0;
@@ -937,7 +936,10 @@ static int ath6kl_sdio_resume(struct ath6kl *ar)
 	case ATH6KL_STATE_SCHED_SCAN:
 		break;
 
-	default:
+	case ATH6KL_STATE_SUSPENDING:
+		break;
+
+	case ATH6KL_STATE_RESUMING:
 		break;
 	}
 
@@ -1330,7 +1332,6 @@ static int ath6kl_sdio_probe(struct sdio_func *func,
 	INIT_LIST_HEAD(&ar_sdio->wr_asyncq);
 
 	INIT_WORK(&ar_sdio->wr_async_work, ath6kl_sdio_write_async_work);
-
 	init_waitqueue_head(&ar_sdio->irq_wq);
 
 	for (count = 0; count < BUS_REQUEST_MAX_NUM; count++)
