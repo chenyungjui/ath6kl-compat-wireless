@@ -17,6 +17,7 @@ wlan-y += drivers/net/wireless/ath/ath6kl/msm.o
 wlan-y += drivers/net/wireless/ath/ath6kl/softmac.o
 
 wlan-y +=  drivers/net/wireless/ath/ath6kl/testmode.o
+wlan-y += drivers/net/wireless/ath/ath6kl/wmiconfig.o
 
 obj-$(CONFIG_CFG80211) += cfg80211.o
 
