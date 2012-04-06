@@ -367,6 +367,11 @@
  *	%NL80211_ATTR_WIPHY_FREQ, %NL80211_ATTR_CONTROL_PORT,
  *	%NL80211_ATTR_CONTROL_PORT_ETHERTYPE and
  *	%NL80211_ATTR_CONTROL_PORT_NO_ENCRYPT.
+ *	Background scan period can optionally be
+ *	specified in %NL80211_ATTR_BG_SCAN_PERIOD,
+ *	if not specified default background scan configuration
+ *	in driver is used and if period value is 0, bg scan will be disabled.
+ *	This attribute is ignored if driver does not support roam scan.
  *	It is also sent as an event, with the BSSID and response IEs when the
  *	connection is established or failed to be established. This can be
  *	determined by the STATUS_CODE attribute.
@@ -538,47 +543,9 @@
  *	OLBC handling in hostapd. Beacons are reported in %NL80211_CMD_FRAME
  *	messages. Note that per PHY only one application may register.
  *
- * @NL80211_CMD_BTCOEX_INQ: This command is used to provide WiFi driver the
- *	Bluetooth inquiry status. The status will be available in flag
- *	%NL80211_ATTR_BTCOEX_INQ_STATUS. This information can be used to
- *	manage shared resources when the wireless device is a Bluetooth-Wifi
- *	coex solution.
- *
- * @NL80211_CMD_BTCOEX_SCO: This command is used to give the driver the
- *	Bluetooth SCO connection status. The SCO status is available in
- *	%NL80211_ATTR_BTCOEX_SCO_STATUS flag. It also provide
- *	%NL80211_ATTR_BTCOEX_TYPE_ESCO to specify if the connection is ESCO.
- *	It also has %NL80211_ATTR_BTCOEX_ESCO_TX_INTERVAL specifing the time
- *	between consecutive eSCO instance(Invalid for SCO).
- *	%NL80211_ATTR_BTCOEX_ESCO_TX_PKT_LEN spedicying the the length in
- *	bytes of the eSCO payload in transmit direction.This feature
- *	useful for a Bluetooth-Wifi coex solution.
- *
- * @NL80211_CMD_BTCOEX_A2DP: This command is used to give the driver the
- *	Bluetooth A2DP profile connection status. The A2DP profile connection
- *	status is available in %NL80211_ATTR_BTCOEX_A2DP_STATUS flag.
- *	This feature is typically used when the wireless device is a
- *	Bluetooth-Wifi coex solution.
- *
- * @NL80211_CMD_BTCOEX_ACL_INFO: This command is used to let the wifi driver
- *	know information regarding the ACL link. Currently supported
- *	information includes The role as %NL80211_ATTR_BTCOEX_ACL_ROLE,
- *	%NL80211_ATTR_BTCOEX_REMOTE_LMP_VER showing the LMP version of the
- *	remote device. This feature is useful when the wireless device is a
- *	Bluetooth-Wifi coex solution.
- *
- * @NL80211_CMD_BTCOEX_ANTENNA_CONFIG: This command is used to let the wifi
- *	driver know information regarding the antenna configuration used
- *	in case of a BT-coex solution. This information is provide as
- *	%NL80211_ATTR_BTCOEX_ANTENNA_CONFIG.This feature is useful when
- *	the wireless device is a Bluetooth-Wifi coex solution.
- *
- * @NL80211_CMD_BTCOEX_BT_VENDOR: This command is used to let the wifi
- *	driver know the Bluetooth chip vendor. This would let it use
- *	different configuration in case of different BT chip vendor
- *	is used in BT-Coex scenario. This information is provided as
- *	%NL80211_ATTR_BT_VENDOR_ID.This feature is useful when
- *	the wireless device is a Bluetooth-Wifi coex solution.
+ * @NL80211_CMD_BTCOEX: Send BTCOEX command to firmware.  This is
+ *  used by the firmware to be aware of BT traffic and share radio
+ *	between WiFi and BT.
  *
  * @NL80211_CMD_MAX: highest used command number
  * @__NL80211_CMD_AFTER_LAST: internal use
@@ -717,12 +684,6 @@ enum nl80211_commands {
 
 	NL80211_CMD_UNEXPECTED_4ADDR_FRAME,
 
-	NL80211_CMD_BTCOEX_INQ,
-	NL80211_CMD_BTCOEX_SCO,
-	NL80211_CMD_BTCOEX_A2DP,
-	NL80211_CMD_BTCOEX_ACL_INFO,
-	NL80211_CMD_BTCOEX_ANTENNA_CONFIG,
-	NL80211_CMD_BTCOEX_BT_VENDOR,
 	NL80211_CMD_BTCOEX,
 
 	/* add new commands above here */
@@ -1220,52 +1181,10 @@ enum nl80211_commands {
  *	probe-response frame. The DA field in the 802.11 header is zero-ed out,
  *	to be filled by the FW.
  *
- * @%NL80211_ATTR_BTCOEX_INQ_STATUS: A flag indicating if Bluetooth inquiry
- *	is in progress. this flag is useful for resource management in a
- *	bluetooth wifi combo solution.
+ * @NL80211_ATTR_BG_SCAN_PERIOD: Background scan period in seconds
+ *      or 0 to disable background scan.
  *
- * @%NL80211_ATTR_BTCOEX_SCO_STATUS: A flag indicating if Bluetooth SCO audio
- *	connection is active. this flag is useful for resource management in a
- *	bluetooth wifi combo solution.
- *
- * @%NL80211_ATTR_BTCOEX_TYPE_ESCO: A flag indicating if the audio connection
- *	is of type ESCO. If this attribute is available, the audio connection
- *	is of type ESCO. this information is useful for resource management
- *	in a bluetooth wifi combo solution.
- *
- * @%NL80211_ATTR_BTCOEX_ESCO_TX_INTERVAL: Provides the time between two
- *	consecutive eSCO instant, measured in slots.This attribute will be
- *	available only in case of an eSCO connection.
- *	this information is useful for resource management in a bluetooth
- *	wifi combo solution.
- *
- * @%NL80211_ATTR_BTCOEX_ESCO_TX_PKT_LEN: Provides the length in bytes of the
- *	eSCO payload in the receive direction. This attribute will be available
- *	in case of an eSCO connection.
- *	this information is useful for resource management in a bluetooth
- *	wifi combo solution.
- *
- * @%NL80211_ATTR_BTCOEX_A2DP_STATUS: A flag indicating the Bluetooth
- *	A2DP connection status. This flag is useful for resource management
- *	in a bluetooth wifi combo solution.
- *
- * @%NL80211_ATTR_BTCOEX_ACL_ROLE: Indicates if Bluetooth chip's role
- *	in an ACL connection. See &enum nl80211_btcoex_acl_role for possible
- *	value. This flag is useful for resource management in a bluetooth
- *	wifi combo solution.
- *
- * @%NL80211_ATTR_BTCOEX_REMOTE_LMP_VER: Indicates the remote device LMP version
- *	in an ACL connection. See Link manager version parameter in Bluetooth
- *	assigned numbers for possible value. This values is useful for resource
- *	management in a bluetooth wifi combo solution.
- * @%NL80211_ATTR_BTCOEX_ANTENNA_CONFIG: Indicates the Bluetooth wifi chip
- *	configuration. See &enum nl80211_btcoex_antenna_config for possible
- *	value. This flag is useful for resource management in a bluetooth
- *	wifi combo solution.
- * @%NL80211_ATTR_BT_VENDOR_ID: Indicates the Bluetooth chip
- *	vendor name. See &enum nl80211_btcoex_vendor_list for possible
- *	value. This flag is useful for resource management in a bluetooth
- *	wifi combo solution.
+ * @NL80211_ATTR_BTCOEX_DATA: BT coex wmi command.
  *
  * @NL80211_ATTR_MAX: highest attribute number currently defined
  * @__NL80211_ATTR_AFTER_LAST: internal use
@@ -1505,16 +1424,20 @@ enum nl80211_attrs {
 
 	NL80211_ATTR_PROBE_RESP,
 
-	NL80211_ATTR_BTCOEX_INQ_STATUS,
-	NL80211_ATTR_BTCOEX_SCO_STATUS,
-	NL80211_ATTR_BTCOEX_TYPE_ESCO,
-	NL80211_ATTR_BTCOEX_ESCO_TX_INTERVAL,
-	NL80211_ATTR_BTCOEX_ESCO_TX_PKT_LEN,
-	NL80211_ATTR_BTCOEX_A2DP_STATUS,
-	NL80211_ATTR_BTCOEX_ACL_ROLE,
-	NL80211_ATTR_BTCOEX_REMOTE_LMP_VER,
-	NL80211_ATTR_BTCOEX_ANTENNA_CONFIG,
-	NL80211_ATTR_BT_VENDOR_ID,
+	NL80211_ATTR_DFS_REGION,
+
+	NL80211_ATTR_DISABLE_HT,
+
+	NL80211_ATTR_HT_CAPABILITY_MASK,
+
+	NL80211_ATTR_NOACK_MAP,
+
+	NL80211_ATTR_INACTIVITY_TIMEOUT,
+
+	NL80211_ATTR_RX_SIGNAL_DBM,
+
+	NL80211_ATTR_BG_SCAN_PERIOD,
+
 	NL80211_ATTR_BTCOEX_DATA,
 
 	/* add attributes here, update the policy in nl80211.c */
@@ -2868,36 +2791,6 @@ enum nl80211_probe_resp_offload_support_attr {
 	NL80211_PROBE_RESP_OFFLOAD_SUPPORT_WPS2 =	1<<1,
 	NL80211_PROBE_RESP_OFFLOAD_SUPPORT_P2P =	1<<2,
 	NL80211_PROBE_RESP_OFFLOAD_SUPPORT_80211U =	1<<3,
-};
-
-/*
- * enum nl80211_btcoex_acl_role - Bluetooth ACL link role
- * @NL80211_BTCOEX_ACL_ROLE_UNKNOWN: Bluetooth chip role unknown.
- * @NL80211_BTCOEX_ACL_ROLE_MASTER: Bluetooth chip is in master role.
- * @NL80211_BTCOEX_ACL_ROLE_SLAVE: Bluetooth chip is in slave role.
- */
-enum nl80211_btcoex_acl_role {
-	NL80211_BTCOEX_ACL_ROLE_UNKNOWN,
-	NL80211_BTCOEX_ACL_ROLE_MASTER,
-	NL80211_BTCOEX_ACL_ROLE_SLAVE
-};
-/**
- * enum nl80211_btcoex_antenna_config - Bluetooth WiFi antenna configuration
- * @NL80211_BTCOEX_ANTENNA_DA: Bluetooth and WiFI chip used dual antenna.
- * @NL80211_BTCOEX_ANTENNA_SA: Bluetooth and WiFI chip used dual antenna.
- */
-enum nl80211_btcoex_antenna_config {
-	NL80211_BTCOEX_ANTENNA_DA,
-	NL80211_BTCOEX_ANTENNA_SA,
-};
-/**
- * enum nl80211_btcoex_vendor_list - Bluetooth chip vendor list
- * @NL80211_BTCOEX_VENDOR_DEFAULT: Uses default Bluetooth chip.
- * @NL80211_BTCOEX_VENDOR_QCOM: Uses Qualcomm Bluetooth chip.
- */
-enum nl80211_btcoex_vendor_list {
-	NL80211_BTCOEX_VENDOR_DEFAULT,
-	NL80211_BTCOEX_VENDOR_QCOM,
 };
 
 enum nl80211_btcoex_cmds {

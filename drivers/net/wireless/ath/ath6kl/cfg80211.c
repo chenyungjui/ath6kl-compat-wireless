@@ -54,6 +54,8 @@ module_param(ath6kl_p2p, uint, 0644);
 	.max_power      = 30,                       \
 }
 
+#define DEFAULT_BG_SCAN_PERIOD 60
+
 static struct ieee80211_rate ath6kl_rates[] = {
 	RATETAB_ENT(10, 0x1, 0),
 	RATETAB_ENT(20, 0x2, 0),
@@ -605,6 +607,17 @@ static int ath6kl_cfg80211_connect(struct wiphy *wiphy, struct net_device *dev,
 					vif->ssid_len, vif->ssid,
 					vif->req_bssid, vif->ch_hint,
 					ar->connect_ctrl_flags, nw_subtype);
+
+	/* disable background scan if period is 0 */
+	if (sme->bg_scan_period == 0)
+		sme->bg_scan_period = 0xffff;
+
+	/* configure default value if not specified */
+	if (sme->bg_scan_period == -1)
+		sme->bg_scan_period = DEFAULT_BG_SCAN_PERIOD;
+
+	ath6kl_wmi_scanparams_cmd(ar->wmi, vif->fw_vif_idx, 0, 0,
+				  sme->bg_scan_period, 0, 0, 0, 3, 0, 0, 0);
 
 	up(&ar->sem);
 
@@ -2216,6 +2229,7 @@ int ath6kl_cfg80211_suspend(struct ath6kl *ar,
 			    enum ath6kl_cfg_suspend_mode mode,
 			    struct cfg80211_wowlan *wow)
 {
+	struct ath6kl_vif *vif;
 	enum ath6kl_state prev_state;
 	int ret;
 
@@ -2284,6 +2298,9 @@ int ath6kl_cfg80211_suspend(struct ath6kl *ar,
 	default:
 		break;
 	}
+
+	list_for_each_entry(vif, &ar->vif_list, list)
+		ath6kl_cfg80211_scan_complete_event(vif, true);
 
 	return 0;
 }
@@ -2474,6 +2491,10 @@ static int ath6kl_ap_beacon(struct wiphy *wiphy, struct net_device *dev,
 	struct wmi_connect_cmd p;
 	int res;
 	int i, ret;
+	u8 *rsn_ie;
+	int rsn_ie_len;
+	u16 cnt;
+	u16 rsn_capb;
 
 	ath6kl_dbg(ATH6KL_DBG_WLAN_CFG, "%s: add=%d\n", __func__, add);
 
@@ -2610,6 +2631,52 @@ static int ath6kl_ap_beacon(struct wiphy *wiphy, struct net_device *dev,
 	memcpy(p.ssid, vif->ssid, vif->ssid_len);
 	p.dot11_auth_mode = vif->dot11_auth_mode;
 	p.ch = cpu_to_le16(vif->next_chan);
+
+	/*
+	 * Get the PTKSA replay counter in the RSN IE. Supplicant
+	 * will use the RSN IE in M3 message and firmware has to
+	 * advertise the same in beacon/probe response. Send
+	 * the complete RSN IE capability field to firmware
+	 */
+	if ((p.auth_mode & (WPA2_AUTH | WPA2_PSK_AUTH)) && (info->tail) &&
+	    test_bit(ATH6KL_FW_CAPABILITY_RSN_CAP_OVERRIDE,
+		     ar->fw_capabilities)) {
+		rsn_capb = 0;
+		rsn_ie = (u8 *)cfg80211_find_ie(WLAN_EID_RSN, info->tail,
+							info->tail_len);
+		if (rsn_ie) {
+			rsn_ie_len = *(rsn_ie + 1);
+			rsn_ie += 2;	/* skip element id and length */
+			do {
+				/* skip version, group cipher */
+				if (rsn_ie_len < 6)
+					break;
+				rsn_ie +=  6;
+				rsn_ie_len -= 6;
+				/* skip pairwise cipher suite */
+				if (rsn_ie_len < 2)
+					break;
+				cnt = *((u16 *)rsn_ie);
+				rsn_ie += (2 + cnt * 4);
+				rsn_ie_len -= (2 + cnt * 4);
+				/* skip akm suite */
+				if (rsn_ie_len < 2)
+					break;
+				cnt = *((u16 *)rsn_ie);
+				rsn_ie += (2 + cnt * 4);
+				rsn_ie_len -= (2 + cnt * 4);
+				if (rsn_ie_len < 2)
+					break;
+				rsn_capb = *((u16 *)rsn_ie);
+			} while (0);
+			rsn_capb = cpu_to_le16(rsn_capb);
+			res = ath6kl_wmi_set_ie_cmd(ar->wmi, vif->fw_vif_idx,
+				WLAN_EID_RSN, WMI_RSN_IE_CAPB,
+				(const u8 *)&rsn_capb, sizeof(rsn_capb));
+			if (res < 0)
+				return res;
+		}
+	}
 
 	/* Enable uAPSD support by default */
 	res = ath6kl_wmi_ap_set_apsd(ar->wmi, vif->fw_vif_idx, true);
@@ -3077,12 +3144,6 @@ static struct cfg80211_ops ath6kl_cfg80211_ops = {
 	.cancel_remain_on_channel = ath6kl_cancel_remain_on_channel,
 	.mgmt_tx = ath6kl_mgmt_tx,
 	.mgmt_frame_register = ath6kl_mgmt_frame_register,
-	.notify_btcoex_inq_status = ath6kl_notify_btcoex_inq_status,
-	.notify_btcoex_sco_status = ath6kl_notify_btcoex_sco_status,
-	.notify_btcoex_a2dp_status = ath6kl_notify_btcoex_a2dp_status,
-	.notify_btcoex_acl_info = ath6kl_notify_btcoex_acl_info,
-	.notify_btcoex_antenna_config = ath6kl_notify_btcoex_antenna_config,
-	.notify_btcoex_bt_vendor = ath6kl_notify_btcoex_bt_vendor,
 	.notify_btcoex = ath6kl_notify_btcoex,
 	.sched_scan_start = ath6kl_cfg80211_sscan_start,
 	.sched_scan_stop = ath6kl_cfg80211_sscan_stop,

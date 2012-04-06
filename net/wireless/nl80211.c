@@ -199,18 +199,14 @@ static const struct nla_policy nl80211_policy[NL80211_ATTR_MAX+1] = {
 	[NL80211_ATTR_DONT_WAIT_FOR_ACK] = { .type = NLA_FLAG },
 	[NL80211_ATTR_PROBE_RESP] = { .type = NLA_BINARY,
 				      .len = IEEE80211_MAX_DATA_LEN },
-
-	[NL80211_ATTR_BTCOEX_INQ_STATUS] = { .type = NLA_FLAG },
-	[NL80211_ATTR_BTCOEX_SCO_STATUS] = { .type = NLA_FLAG },
-	[NL80211_ATTR_BTCOEX_TYPE_ESCO] = { .type = NLA_FLAG },
-	[NL80211_ATTR_BTCOEX_ESCO_TX_INTERVAL] = { .type = NLA_U32 },
-	[NL80211_ATTR_BTCOEX_ESCO_TX_PKT_LEN] = { .type = NLA_U32 },
-	[NL80211_ATTR_BTCOEX_A2DP_STATUS] = { .type = NLA_FLAG },
-	[NL80211_ATTR_BTCOEX_ACL_ROLE] = { .type = NLA_U32 },
-	[NL80211_ATTR_BTCOEX_REMOTE_LMP_VER] = { .type = NLA_U32 },
-
-	[NL80211_ATTR_BTCOEX_ANTENNA_CONFIG] = { .type = NLA_U32 },
-	[NL80211_ATTR_BT_VENDOR_ID] = { .type = NLA_U32 },
+	[NL80211_ATTR_DFS_REGION] = { .type = NLA_U8 },
+	[NL80211_ATTR_DISABLE_HT] = { .type = NLA_FLAG },
+	[NL80211_ATTR_HT_CAPABILITY_MASK] = {
+		.len = NL80211_HT_CAPABILITY_LEN
+	},
+	[NL80211_ATTR_NOACK_MAP] = { .type = NLA_U16 },
+	[NL80211_ATTR_INACTIVITY_TIMEOUT] = { .type = NLA_U16 },
+	[NL80211_ATTR_BG_SCAN_PERIOD] = { .type = NLA_U16 },
 	[NL80211_ATTR_BTCOEX_DATA] = { .type = NLA_BINARY,
 				      .len = IEEE80211_MAX_DATA_LEN },
 };
@@ -4911,6 +4907,13 @@ static int nl80211_connect(struct sk_buff *skb, struct genl_info *info)
 
 	wiphy = &rdev->wiphy;
 
+	connect.bg_scan_period = -1;
+	if (info->attrs[NL80211_ATTR_BG_SCAN_PERIOD] &&
+		(wiphy->flags & WIPHY_FLAG_SUPPORTS_FW_ROAM)) {
+		connect.bg_scan_period =
+			nla_get_u16(info->attrs[NL80211_ATTR_BG_SCAN_PERIOD]);
+	}
+
 	if (info->attrs[NL80211_ATTR_MAC])
 		connect.bssid = nla_data(info->attrs[NL80211_ATTR_MAC]);
 	connect.ssid = nla_data(info->attrs[NL80211_ATTR_SSID]);
@@ -5968,115 +5971,6 @@ static int nl80211_register_beacons(struct sk_buff *skb, struct genl_info *info)
 	return 0;
 }
 
-static int nl80211_btcoex_notify_inq(struct sk_buff *skb,
-				      struct genl_info *info)
-{
-	struct cfg80211_registered_device *dev = info->user_ptr[0];
-	bool scan_status;
-
-	if (!dev)
-		return -ENODEV;
-
-	scan_status = !!info->attrs[NL80211_ATTR_BTCOEX_INQ_STATUS];
-
-	if (!dev->ops->notify_btcoex_inq_status)
-		return -EOPNOTSUPP;
-
-	return dev->ops->notify_btcoex_inq_status(&dev->wiphy, scan_status);
-}
-
-static int nl80211_btcoex_notify_sco(struct sk_buff *skb,
-				     struct genl_info *info)
-{
-	struct cfg80211_registered_device *dev = info->user_ptr[0];
-	int tx_interval = 0;
-	int tx_pkt_len = 0;
-	bool sco_status;
-	bool esco;
-
-	if (!dev)
-		return -ENODEV;
-
-	sco_status = !!info->attrs[NL80211_ATTR_BTCOEX_SCO_STATUS];
-	esco = !!info->attrs[NL80211_ATTR_BTCOEX_TYPE_ESCO];
-
-	if (esco) {
-		if (info->attrs[NL80211_ATTR_BTCOEX_ESCO_TX_INTERVAL])
-			tx_interval = nla_get_u32(info->attrs
-				      [NL80211_ATTR_BTCOEX_ESCO_TX_INTERVAL]);
-
-		if (info->attrs[NL80211_ATTR_BTCOEX_ESCO_TX_PKT_LEN])
-			tx_pkt_len = nla_get_u32(info->attrs
-					[NL80211_ATTR_BTCOEX_ESCO_TX_PKT_LEN]);
-	}
-	if (!dev->ops->notify_btcoex_sco_status)
-		return -EOPNOTSUPP;
-
-	return dev->ops->notify_btcoex_sco_status(&dev->wiphy, sco_status,
-						  esco, tx_interval,
-						  tx_pkt_len);
-}
-
-static int nl80211_btcoex_notify_a2dp(struct sk_buff *skb,
-				      struct genl_info *info)
-{
-	struct cfg80211_registered_device *dev = info->user_ptr[0];
-	bool a2dp_status;
-
-	if (!dev)
-		return -ENODEV;
-
-	a2dp_status = !!info->attrs[NL80211_ATTR_BTCOEX_A2DP_STATUS];
-
-	if (!dev->ops->notify_btcoex_a2dp_status)
-		return -EOPNOTSUPP;
-
-	return dev->ops->notify_btcoex_a2dp_status(&dev->wiphy, a2dp_status);
-}
-
-static int nl80211_btcoex_notify_acl_info(struct sk_buff *skb,
-					  struct genl_info *info)
-{
-	struct cfg80211_registered_device *dev = info->user_ptr[0];
-	enum nl80211_btcoex_acl_role role = NL80211_BTCOEX_ACL_ROLE_UNKNOWN;
-	u32 remote_lmp_ver = 0;
-
-	if (!dev)
-		return -ENODEV;
-
-	if (info->attrs[NL80211_ATTR_BTCOEX_ACL_ROLE])
-		role = nla_get_u32(info->attrs[NL80211_ATTR_BTCOEX_ACL_ROLE]);
-
-	if (info->attrs[NL80211_ATTR_BTCOEX_REMOTE_LMP_VER])
-		remote_lmp_ver = nla_get_u32(info->attrs
-					[NL80211_ATTR_BTCOEX_REMOTE_LMP_VER]);
-
-	if (!dev->ops->notify_btcoex_acl_info)
-		return -EOPNOTSUPP;
-
-	return dev->ops->notify_btcoex_acl_info(&dev->wiphy, role,
-						remote_lmp_ver);
-}
-static int nl80211_btcoex_notify_antenna_config(struct sk_buff *skb,
-						struct genl_info *info)
-{
-	struct cfg80211_registered_device *dev = info->user_ptr[0];
-	enum nl80211_btcoex_antenna_config config = NL80211_BTCOEX_ANTENNA_DA;
-
-	if (!dev)
-		return -ENODEV;
-
-	if (!info->attrs[NL80211_ATTR_BTCOEX_ANTENNA_CONFIG])
-		return -EINVAL;
-
-	config = nla_get_u32(info->attrs[NL80211_ATTR_BTCOEX_ANTENNA_CONFIG]);
-
-	if (!dev->ops->notify_btcoex_antenna_config)
-		return -EOPNOTSUPP;
-
-	return dev->ops->notify_btcoex_antenna_config(&dev->wiphy, config);
-}
-
 static int nl80211_btcoex_notify(struct sk_buff *skb,
 					   struct genl_info *info)
 {
@@ -6099,26 +5993,6 @@ static int nl80211_btcoex_notify(struct sk_buff *skb,
 	return dev->ops->notify_btcoex(&dev->wiphy, buf, len);
 }
 
-static int nl80211_btcoex_notify_bt_vendor(struct sk_buff *skb,
-					   struct genl_info *info)
-{
-	struct cfg80211_registered_device *dev = info->user_ptr[0];
-	enum nl80211_btcoex_antenna_config config =
-						NL80211_BTCOEX_VENDOR_DEFAULT;
-
-	if (!dev)
-		return -ENODEV;
-
-	if (!info->attrs[NL80211_ATTR_BT_VENDOR_ID])
-		return -EINVAL;
-
-	config = nla_get_u32(info->attrs[NL80211_ATTR_BT_VENDOR_ID]);
-
-	if (!dev->ops->notify_btcoex_bt_vendor)
-		return -EOPNOTSUPP;
-
-	return dev->ops->notify_btcoex_bt_vendor(&dev->wiphy, config);
-}
 #define NL80211_FLAG_NEED_WIPHY		0x01
 #define NL80211_FLAG_NEED_NETDEV	0x02
 #define NL80211_FLAG_NEED_RTNL		0x04
@@ -6696,54 +6570,6 @@ static struct genl_ops nl80211_ops[] = {
 		.policy = nl80211_policy,
 		.flags = GENL_ADMIN_PERM,
 		.internal_flags = NL80211_FLAG_NEED_WIPHY |
-				  NL80211_FLAG_NEED_RTNL,
-	},
-	{
-		.cmd = NL80211_CMD_BTCOEX_INQ,
-		.doit = nl80211_btcoex_notify_inq,
-		.policy = nl80211_policy,
-		.flags = GENL_ADMIN_PERM,
-		.internal_flags = NL80211_FLAG_NEED_NETDEV |
-				  NL80211_FLAG_NEED_RTNL,
-	},
-	{
-		.cmd = NL80211_CMD_BTCOEX_SCO,
-		.doit = nl80211_btcoex_notify_sco,
-		.policy = nl80211_policy,
-		.flags = GENL_ADMIN_PERM,
-		.internal_flags = NL80211_FLAG_NEED_NETDEV |
-				  NL80211_FLAG_NEED_RTNL,
-	},
-	{
-		.cmd = NL80211_CMD_BTCOEX_A2DP,
-		.doit = nl80211_btcoex_notify_a2dp,
-		.policy = nl80211_policy,
-		.flags = GENL_ADMIN_PERM,
-		.internal_flags = NL80211_FLAG_NEED_NETDEV |
-				  NL80211_FLAG_NEED_RTNL,
-	},
-	{
-		.cmd = NL80211_CMD_BTCOEX_ACL_INFO,
-		.doit = nl80211_btcoex_notify_acl_info,
-		.policy = nl80211_policy,
-		.flags = GENL_ADMIN_PERM,
-		.internal_flags = NL80211_FLAG_NEED_NETDEV |
-				  NL80211_FLAG_NEED_RTNL,
-	},
-	{
-		.cmd = NL80211_CMD_BTCOEX_ANTENNA_CONFIG,
-		.doit = nl80211_btcoex_notify_antenna_config,
-		.policy = nl80211_policy,
-		.flags = GENL_ADMIN_PERM,
-		.internal_flags = NL80211_FLAG_NEED_NETDEV |
-				  NL80211_FLAG_NEED_RTNL,
-	},
-	{
-		.cmd = NL80211_CMD_BTCOEX_BT_VENDOR,
-		.doit = nl80211_btcoex_notify_bt_vendor,
-		.policy = nl80211_policy,
-		.flags = GENL_ADMIN_PERM,
-		.internal_flags = NL80211_FLAG_NEED_NETDEV |
 				  NL80211_FLAG_NEED_RTNL,
 	},
 	{

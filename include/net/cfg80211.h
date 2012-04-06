@@ -1159,6 +1159,8 @@ struct cfg80211_ibss_params {
  * @key_len: length of WEP key for shared key authentication
  * @key_idx: index of WEP key for shared key authentication
  * @key: WEP key for shared key authentication
+ * @bg_scan_period:  Background scan period in seconds
+ *   or -1 to indicate that default value is to be used.
  */
 struct cfg80211_connect_params {
 	struct ieee80211_channel *channel;
@@ -1172,6 +1174,7 @@ struct cfg80211_connect_params {
 	struct cfg80211_crypto_settings crypto;
 	const u8 *key;
 	u8 key_len, key_idx;
+	int bg_scan_period;
 };
 
 /**
@@ -1443,23 +1446,8 @@ struct cfg80211_gtk_rekey_data {
  * @probe_client: probe an associated client, must return a cookie that it
  *	later passes to cfg80211_probe_status().
  *
- * @notify_btcoex_inq_status: Notify the Bluetooth inquiry status in
- *	case of a Bleutooth co-ex device.
+ * @notify_btcoex: Send BT coex WMI command.
  *
- * @notify_btcoex_sco_status: Notify the Bluetooth SCO connection status in
- *	case of a Bluetooth co-ex device.
- *
- * @notify_btcoex_a2dp_status: Notify the Bluetooth A2DP connection status in
- *	case of a Bluetooth co-ex device.
- *
- * @notify_btcoex_acl_info: Notify the Bluetooth chip's ACL connction
- *	information
- *
- * @notify_btcoex_antenna_config: Notify the Bluetooth WiFi chip antenna
- *	configuration
- *
- * @notify_btcoex_bt_vendor: Notify the Bluetooth chip vendor in case of using
- *	different Bluetooth chip vendor
  */
 
 struct cfg80211_ops {
@@ -1656,18 +1644,6 @@ struct cfg80211_ops {
 
 	struct ieee80211_channel *(*get_channel)(struct wiphy *wiphy);
 
-	int	(*notify_btcoex_inq_status)(struct wiphy *wiphy, bool status);
-	int	(*notify_btcoex_sco_status)(struct wiphy *wiphy,  bool status,
-					    bool esco, u32 tx_interval,
-					    u32 tx_pkt_len);
-	int	(*notify_btcoex_a2dp_status)(struct wiphy *wiphy, bool status);
-	int	(*notify_btcoex_acl_info)(struct wiphy *wiphy,
-					  enum nl80211_btcoex_acl_role role,
-					  u32 remote_lmp_ver);
-	int	(*notify_btcoex_antenna_config)(struct wiphy *wiphy,
-					  enum nl80211_btcoex_antenna_config);
-	int	(*notify_btcoex_bt_vendor)(struct wiphy *wiphy,
-					   enum nl80211_btcoex_vendor_list);
 	int	(*notify_btcoex)(struct wiphy *wiphy,
 					   u8 *buf, int len);
 };
