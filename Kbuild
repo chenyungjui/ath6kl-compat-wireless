@@ -25,7 +25,7 @@ cfg80211-y += net/wireless/core.o net/wireless/sysfs.o net/wireless/radiotap.o n
 cfg80211-y += net/wireless/mlme.o net/wireless/ibss.o net/wireless/sme.o net/wireless/chan.o net/wireless/ethtool.o net/wireless/mesh.o
 cfg80211-$(CONFIG_CFG80211_DEBUGFS) += net/wireless/debugfs.o
 cfg80211-y += net/wireless/wext-compat.o net/wireless/wext-sme.o
-cfg80211-$(CONFIG_CFG80211_INTERNAL_REGDB) += net/wireless/regdb.o
+cfg80211-y += net/wireless/regdb.o
 
 $(obj)/net/wireless/regdb.c: $(src)/net/wireless/db.txt $(src)/net/wireless/genregdb.awk
 	@$(AWK) -f $(src)/net/wireless/genregdb.awk < $< > $@
@@ -36,6 +36,7 @@ ccflags-y += -DCONFIG_ATH6KL_DEBUG
 ccflags-y += -DCONFIG_NL80211_TESTMODE
 ccflags-y += -DCONFIG_CFG80211_DEFAULT_PS
 ccflags-y += -DCONFIG_CFG80211_WEXT
+ccflags-y += -DCONFIG_CFG80211_INTERNAL_REGDB
 ccflags-y += -D__CHECK_ENDIAN__
 
 ccflags-y += -I../external/compat-wireless/include
