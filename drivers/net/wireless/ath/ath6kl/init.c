@@ -30,7 +30,8 @@
 
 unsigned int debug_mask;
 static unsigned int testmode;
-static unsigned int suspend_mode;
+/* Set WOW mode as default suspend mode */
+static unsigned int suspend_mode = 3;
 static unsigned int wow_mode;
 static unsigned int uart_debug;
 
