@@ -27,7 +27,7 @@ cfg80211-$(CONFIG_CFG80211_DEBUGFS) += net/wireless/debugfs.o
 cfg80211-y += net/wireless/wext-compat.o net/wireless/wext-sme.o
 cfg80211-y += net/wireless/regdb.o
 
-$(obj)/net/wireless/regdb.c: net/wireless/db.txt net/wireless/genregdb.awk
+$(obj)/net/wireless/regdb.c:  $(PWD)/$(src)/net/wireless/db.txt $(PWD)/$(src)/net/wireless/genregdb.awk
 	@$(AWK) -f $(PWD)/$(src)/net/wireless/genregdb.awk < $< > $@
 
 clean-files := net/wireless/regdb.c
@@ -40,9 +40,9 @@ ccflags-y += -DCONFIG_CFG80211_INTERNAL_REGDB
 ccflags-y += -D__CHECK_ENDIAN__
 
 ccflags-y += -I../external/compat-wireless/include
+ccflags-y += -I../external/compat-wireless/net/wireless
 ccflags-y += -include include/linux/ieee80211.h
 ccflags-y += -include include/linux/nl80211.h
 ccflags-y += -include include/net/cfg80211.h
-ccflags-y += -include net/wireless/regdb.h
 ccflags-y += -include include/linux/compat-2.6.h
 ccflags-y += -include ../../$(TARGET_OUT_INTERMEDIATES)/KERNEL_OBJ/usr/include/linux/version.h
