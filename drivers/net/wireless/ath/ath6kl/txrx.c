@@ -1532,6 +1532,8 @@ void ath6kl_rx(struct htc_target *target, struct htc_packet *packet)
 		return;
 	}
 
+	ath6kl_check_wow_status(ar, skb, false);
+
 	if (vif->nw_type == AP_NETWORK) {
 		datap = (struct ethhdr *) skb->data;
 		if (is_multicast_ether_addr(datap->h_dest))

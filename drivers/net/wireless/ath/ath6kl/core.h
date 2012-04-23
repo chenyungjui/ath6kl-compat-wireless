@@ -478,6 +478,12 @@ struct ath6kl_mc_filter {
 	char hw_addr[ATH6KL_MCAST_FILTER_MAC_ADDR_SIZE];
 };
 
+struct ath6kl_htcap {
+	bool ht_enable;
+	u8 ampdu_factor;
+	unsigned short cap_info;
+};
+
 /*
  * Driver's maximum limit, note that some firmwares support only one vif
  * and the runtime (current) limit must be checked from ar->vif_max.
@@ -497,6 +503,8 @@ enum ath6kl_vif_state {
 	WLAN_ENABLED,
 	STATS_UPDATE_PEND,
 	HOST_SLEEP_MODE_CMD_PROCESSED,
+	NETDEV_MCAST_ALL_ON,
+	NETDEV_MCAST_ALL_OFF,
 };
 
 struct ath6kl_vif {
@@ -526,6 +534,7 @@ struct ath6kl_vif {
 	struct ath6kl_wep_key wep_key_list[WMI_MAX_KEY_INDEX + 1];
 	struct ath6kl_key keys[WMI_MAX_KEY_INDEX + 1];
 	struct aggr_info *aggr_cntxt;
+	struct ath6kl_htcap htcap;
 
 	struct timer_list disconnect_timer;
 	struct timer_list sched_scan_timer;
@@ -538,6 +547,8 @@ struct ath6kl_vif {
 	u32 send_action_id;
 	bool probe_req_report;
 	u16 next_chan;
+	enum nl80211_channel_type next_ch_type;
+	enum ieee80211_band next_ch_band;
 	u16 assoc_bss_beacon_int;
 	u16 bg_scan_period;
 	u8 scan_ctrl_flag;

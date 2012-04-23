@@ -76,7 +76,8 @@ static struct ieee80211_rate ath6kl_rates[] = {
 #define ath6kl_g_rates     (ath6kl_rates + 0)
 #define ath6kl_g_rates_size    12
 
-#define ath6kl_g_htcap (IEEE80211_HT_CAP_SUP_WIDTH_20_40 | \
+#define ath6kl_g_htcap IEEE80211_HT_CAP_SGI_20
+#define ath6kl_a_htcap (IEEE80211_HT_CAP_SUP_WIDTH_20_40 | \
 			IEEE80211_HT_CAP_SGI_20		 | \
 			IEEE80211_HT_CAP_SGI_40)
 
@@ -133,7 +134,7 @@ static struct ieee80211_supported_band ath6kl_band_5ghz = {
 	.channels = ath6kl_5ghz_a_channels,
 	.n_bitrates = ath6kl_a_rates_size,
 	.bitrates = ath6kl_a_rates,
-	.ht_cap.cap = ath6kl_g_htcap,
+	.ht_cap.cap = ath6kl_a_htcap,
 	.ht_cap.ht_supported = true,
 };
 
@@ -1457,9 +1458,38 @@ static int ath6kl_cfg80211_change_iface(struct wiphy *wiphy,
 					struct vif_params *params)
 {
 	struct ath6kl_vif *vif = netdev_priv(ndev);
+	int i;
 
 	ath6kl_dbg(ATH6KL_DBG_WLAN_CFG, "%s: type %u\n", __func__, type);
 
+	/*
+	 * Don't bring up p2p on an interface which is not initialized
+	 * for p2p operation where fw does not have capability to switch
+	 * dynamically between non-p2p and p2p type interface.
+	 */
+	if (!test_bit(ATH6KL_FW_CAPABILITY_STA_P2PDEV_DUPLEX,
+		      vif->ar->fw_capabilities) &&
+	    (type == NL80211_IFTYPE_P2P_CLIENT ||
+	     type == NL80211_IFTYPE_P2P_GO)) {
+		if (vif->ar->vif_max == 1) {
+			if (vif->fw_vif_idx != 0)
+				return -EINVAL;
+			else
+				goto set_iface_type;
+		}
+
+		for (i = vif->ar->max_norm_iface; i < vif->ar->vif_max; i++) {
+			if (i == vif->fw_vif_idx)
+				break;
+		}
+
+		if (i == vif->ar->vif_max) {
+			ath6kl_err("Invalid interface to bring up P2P\n");
+			return -EINVAL;
+		}
+	}
+
+set_iface_type:
 	switch (type) {
 	case NL80211_IFTYPE_STATION:
 		vif->next_mode = INFRA_NETWORK;
@@ -2018,6 +2048,13 @@ static int ath6kl_wow_suspend(struct ath6kl *ar, struct cfg80211_wowlan *wow)
 	if (wow && (wow->n_patterns > WOW_MAX_FILTERS_PER_LIST))
 		return -EINVAL;
 
+	if (!test_bit(NETDEV_MCAST_ALL_ON, &vif->flags)) {
+		ret = ath6kl_wmi_mcast_filter_cmd(vif->ar->wmi,
+						vif->fw_vif_idx, false);
+		if (ret)
+			return ret;
+	}
+
 	/* Clear existing WOW patterns */
 	for (i = 0; i < WOW_MAX_FILTERS_PER_LIST; i++)
 		ath6kl_wmi_del_wow_pattern_cmd(ar->wmi, vif->fw_vif_idx,
@@ -2149,6 +2186,13 @@ static int ath6kl_wow_resume(struct ath6kl *ar)
 
 	ar->state = ATH6KL_STATE_ON;
 
+	if (!test_bit(NETDEV_MCAST_ALL_OFF, &vif->flags)) {
+		ret = ath6kl_wmi_mcast_filter_cmd(vif->ar->wmi,
+					vif->fw_vif_idx, true);
+		if (ret)
+			return ret;
+	}
+
 	netif_wake_queue(vif->ndev);
 
 	return 0;
@@ -2242,7 +2286,6 @@ int ath6kl_cfg80211_suspend(struct ath6kl *ar,
 		ath6kl_tx_data_cleanup(ar);
 
 		prev_state = ar->state;
-
 		ret = ath6kl_wow_suspend(ar, wow);
 		if (ret) {
 			ar->state = prev_state;
@@ -2409,6 +2452,27 @@ void ath6kl_check_wow_status(struct ath6kl *ar, struct sk_buff *skb,
 }
 #endif
 
+static int ath6kl_set_htcap(struct ath6kl_vif *vif, enum ieee80211_band band,
+			    bool ht_enable)
+{
+	struct ath6kl_htcap *htcap = &vif->htcap;
+
+	if (htcap->ht_enable == ht_enable)
+		return 0;
+
+	if (ht_enable) {
+		/* Set default ht capabilities */
+		htcap->ht_enable = true;
+		htcap->cap_info = (band == IEEE80211_BAND_2GHZ) ?
+				   ath6kl_g_htcap : ath6kl_a_htcap;
+		htcap->ampdu_factor = IEEE80211_HT_MAX_AMPDU_16K;
+	} else /* Disable ht */
+		memset(htcap, 0, sizeof(*htcap));
+
+	return ath6kl_wmi_set_htcap_cmd(vif->ar->wmi, vif->fw_vif_idx,
+					band, htcap);
+}
+
 static int ath6kl_set_channel(struct wiphy *wiphy, struct net_device *dev,
 			      struct ieee80211_channel *chan,
 			      enum nl80211_channel_type channel_type)
@@ -2432,6 +2496,8 @@ static int ath6kl_set_channel(struct wiphy *wiphy, struct net_device *dev,
 	ath6kl_dbg(ATH6KL_DBG_WLAN_CFG, "%s: center_freq=%u hw_value=%u\n",
 		   __func__, chan->center_freq, chan->hw_value);
 	vif->next_chan = chan->center_freq;
+	vif->next_ch_type = channel_type;
+	vif->next_ch_band = chan->band;
 
 	return 0;
 }
@@ -2693,6 +2759,10 @@ static int ath6kl_ap_beacon(struct wiphy *wiphy, struct net_device *dev,
 		p.nw_subtype = SUBTYPE_NONE;
 	}
 
+	if (ath6kl_set_htcap(vif, vif->next_ch_band,
+			     vif->next_ch_type != NL80211_CHAN_NO_HT))
+		return -EIO;
+
 	res = ath6kl_wmi_ap_profile_commit(ar->wmi, vif->fw_vif_idx, &p);
 	if (res < 0)
 		return res;
@@ -2724,6 +2794,13 @@ static int ath6kl_del_beacon(struct wiphy *wiphy, struct net_device *dev)
 
 	ath6kl_wmi_disconnect_cmd(ar->wmi, vif->fw_vif_idx);
 	clear_bit(CONNECTED, &vif->flags);
+
+	/* Restore ht setting in firmware */
+	if (ath6kl_set_htcap(vif, IEEE80211_BAND_2GHZ, true))
+		return -EIO;
+
+	if (ath6kl_set_htcap(vif, IEEE80211_BAND_5GHZ, true))
+		return -EIO;
 
 	return 0;
 }
@@ -3023,7 +3100,7 @@ static int ath6kl_cfg80211_sscan_start(struct wiphy *wiphy,
 
 	ath6kl_wmi_scanparams_cmd(ar->wmi, vif->fw_vif_idx,
 				  interval, interval,
-				  10, 0, 0, 0, 3, 0, 0, 0);
+				  vif->bg_scan_period, 0, 0, 0, 3, 0, 0, 0);
 
 	if (request->n_ssids && request->ssids[0].ssid_len) {
 		for (i = 0; i < request->n_ssids; i++) {
@@ -3397,6 +3474,7 @@ struct net_device *ath6kl_interface_add(struct ath6kl *ar, char *name,
 	vif->scan_ctrl_flag = 0;
 	vif->listen_intvl_t = ATH6KL_DEFAULT_LISTEN_INTVAL;
 	vif->bmiss_time_t = ATH6KL_DEFAULT_BMISS_TIME;
+	vif->htcap.ht_enable = true;
 
 	memcpy(ndev->dev_addr, ar->mac_addr, ETH_ALEN);
 	if (fw_vif_idx != 0)
