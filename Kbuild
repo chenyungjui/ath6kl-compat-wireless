@@ -1,4 +1,42 @@
+ifeq ($(BUILD_ATH6KL_VER_35), 1)
+obj-m		= ath6kl_usb.o
+
+ath6kl_usb-y += drivers/net/wireless/ath/ath6kl-3.5/debug.o
+ath6kl_usb-y += drivers/net/wireless/ath/ath6kl-3.5/htc_pipe.o
+ath6kl_usb-y += drivers/net/wireless/ath/ath6kl-3.5/bmi.o
+ath6kl_usb-y += drivers/net/wireless/ath/ath6kl-3.5/cfg80211.o
+ath6kl_usb-y += drivers/net/wireless/ath/ath6kl-3.5/cfg80211_btcoex.o
+ath6kl_usb-y += drivers/net/wireless/ath/ath6kl-3.5/init.o
+ath6kl_usb-y += drivers/net/wireless/ath/ath6kl-3.5/main.o
+ath6kl_usb-y += drivers/net/wireless/ath/ath6kl-3.5/txrx.o
+ath6kl_usb-y += drivers/net/wireless/ath/ath6kl-3.5/wmi.o
+ath6kl_usb-y += drivers/net/wireless/ath/ath6kl-3.5/wmi_btcoex.o
+ath6kl_usb-y += drivers/net/wireless/ath/ath6kl-3.5/usb.o
+ath6kl_usb-y += drivers/net/wireless/ath/ath6kl-3.5/testmode.o
+ath6kl_usb-y += drivers/net/wireless/ath/ath6kl-3.5/rttm.o
+ath6kl_usb-y += drivers/net/wireless/ath/ath6kl-3.5/diag.o
+ath6kl_usb-y += drivers/net/wireless/ath/ath6kl-3.5/htcoex.o
+
+obj-m += ath6kl_sdio.o
+ath6kl_sdio-y += drivers/net/wireless/ath/ath6kl-3.5/debug.o
+ath6kl_sdio-y += drivers/net/wireless/ath/ath6kl-3.5/hif.o
+ath6kl_sdio-y += drivers/net/wireless/ath/ath6kl-3.5/htc.o
+ath6kl_sdio-y += drivers/net/wireless/ath/ath6kl-3.5/bmi.o
+ath6kl_sdio-y += drivers/net/wireless/ath/ath6kl-3.5/cfg80211.o
+ath6kl_sdio-y += drivers/net/wireless/ath/ath6kl-3.5/cfg80211_btcoex.o
+ath6kl_sdio-y += drivers/net/wireless/ath/ath6kl-3.5/init.o
+ath6kl_sdio-y += drivers/net/wireless/ath/ath6kl-3.5/main.o
+ath6kl_sdio-y += drivers/net/wireless/ath/ath6kl-3.5/txrx.o
+ath6kl_sdio-y += drivers/net/wireless/ath/ath6kl-3.5/wmi.o
+ath6kl_sdio-y += drivers/net/wireless/ath/ath6kl-3.5/wmi_btcoex.o
+ath6kl_sdio-y += drivers/net/wireless/ath/ath6kl-3.5/sdio.o
+ath6kl_sdio-y += drivers/net/wireless/ath/ath6kl-3.5/testmode.o
+ath6kl_sdio-y += drivers/net/wireless/ath/ath6kl-3.5/rttm.o
+ath6kl_sdio-y += drivers/net/wireless/ath/ath6kl-3.5/diag.o
+ath6kl_sdio-y += drivers/net/wireless/ath/ath6kl-3.5/htcoex.o
+else
 obj-m := wlan.o
+
 wlan-y += drivers/net/wireless/ath/ath6kl/debug.o
 wlan-y += drivers/net/wireless/ath/ath6kl/debugfs_pri.o
 wlan-y += drivers/net/wireless/ath/ath6kl/hif.o
@@ -18,6 +56,7 @@ wlan-y += drivers/net/wireless/ath/ath6kl/softmac.o
 
 wlan-y +=  drivers/net/wireless/ath/ath6kl/testmode.o
 wlan-y += drivers/net/wireless/ath/ath6kl/wmiconfig.o
+endif
 
 obj-$(CONFIG_CFG80211) += cfg80211.o
 
