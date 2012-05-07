@@ -34,12 +34,14 @@ static unsigned int testmode;
 static unsigned int suspend_mode = 3;
 static unsigned int wow_mode;
 static unsigned int uart_debug;
+static unsigned int ar6k_clock = 19200000;
 
 module_param(debug_mask, uint, 0644);
 module_param(testmode, uint, 0644);
 module_param(suspend_mode, uint, 0644);
 module_param(wow_mode, uint, 0644);
 module_param(uart_debug, uint, 0644);
+module_param(ar6k_clock, uint, 0644);
 
 static const struct ath6kl_hw hw_list[] = {
 	{
@@ -1495,7 +1497,7 @@ static int ath6kl_init_upload(struct ath6kl *ar)
 			return status;
 	}
 
-	ath6kl_bmi_reg_write(ar, 0x540678, 19200000);
+	ath6kl_bmi_reg_write(ar, 0x540678, ar6k_clock);
 
 	/* write EEPROM data to Target RAM */
 	status = ath6kl_upload_board_file(ar);

@@ -550,13 +550,14 @@ struct ath6kl_vif {
 	enum nl80211_channel_type next_ch_type;
 	enum ieee80211_band next_ch_band;
 	u16 assoc_bss_beacon_int;
-	u16 bg_scan_period;
 	u8 scan_ctrl_flag;
 	u16 listen_intvl_t;
 	u16 bmiss_time_t;
+	u16 bg_scan_period;
 	u8 assoc_bss_dtim_period;
 	struct net_device_stats net_stats;
 	struct target_stats target_stats;
+	struct wmi_connect_cmd profile;
 
 	struct list_head mc_filter;
 };
@@ -637,6 +638,7 @@ struct ath6kl {
 	u8 sta_list_index;
 	struct ath6kl_req_key ap_mode_bkey;
 	struct sk_buff_head mcastpsq;
+	u32 want_ch_switch;
 	spinlock_t mcastpsq_lock;
 	u8 intra_bss;
 	struct wmi_ap_mode_stat ap_stats;

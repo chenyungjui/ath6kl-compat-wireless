@@ -543,6 +543,11 @@
  *	OLBC handling in hostapd. Beacons are reported in %NL80211_CMD_FRAME
  *	messages. Note that per PHY only one application may register.
  *
+ * @NL80211_CMD_CH_SWITCH_NOTIFY: An AP or GO may decide to switch channels
+ *	independently of the userspace SME, send this event indicating
+ *	%NL80211_ATTR_IFINDEX is now on %NL80211_ATTR_WIPHY_FREQ with
+ *	%NL80211_ATTR_WIPHY_CHANNEL_TYPE.
+ *
  * @NL80211_CMD_BTCOEX: Send BTCOEX command to firmware.  This is
  *  used by the firmware to be aware of BT traffic and share radio
  *	between WiFi and BT.
@@ -683,6 +688,10 @@ enum nl80211_commands {
 	NL80211_CMD_REGISTER_BEACONS,
 
 	NL80211_CMD_UNEXPECTED_4ADDR_FRAME,
+
+	NL80211_CMD_SET_NOACK_MAP, /* just to maintain ABI with CH_SWITCH_NOTIFY */
+
+	NL80211_CMD_CH_SWITCH_NOTIFY,
 
 	NL80211_CMD_BTCOEX,
 

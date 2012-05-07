@@ -1586,6 +1586,7 @@ static ssize_t ath6kl_bgscan_int_write(struct file *file,
 		bgscan_int = 0xffff;
 
 	vif->bg_scan_period = bgscan_int;
+
 	ath6kl_wmi_scanparams_cmd(ar->wmi, 0, 0, 0, bgscan_int, 0, 0, 0, 3,
 				  vif->scan_ctrl_flag, 0, 0);
 
