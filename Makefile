@@ -334,6 +334,7 @@ uninstall:
 	@rm -rf $(KLIB)/$(KMODDIR)/drivers/net/wireless/
 	@rm -rf $(KLIB)/$(KMODDIR)/drivers/staging/
 	@rm -rf $(KLIB)/$(KMODDIR)/drivers/net/atl*
+	@rm -rf $(KLIB)/$(KMODDIR)/drivers/net/alx.ko*
 	@# Lets only remove the stuff we are sure we are providing
 	@# on the misc directory.
 	@rm -f $(KLIB)/$(KMODDIR)/drivers/misc/eeprom/eeprom_93cx6.ko*
@@ -420,6 +421,7 @@ uninstall:
 	@$(MODPROBE) -l atl2
 	@$(MODPROBE) -l atl1e
 	@$(MODPROBE) -l atl1c
+	@$(MODPORBE) -l alx
 	@echo
 	@echo "Your old bluetooth subsystem modules were left intact:"
 	@echo
