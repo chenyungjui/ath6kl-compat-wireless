@@ -101,9 +101,29 @@ enum ath6kl_fw_capability {
 	 */
 	ATH6KL_FW_CAPABILITY_STA_P2PDEV_DUPLEX,
 
+	/*
+	 * Firmware has support to cleanup inactive stations
+	 * in AP mode.
+	 */
 	ATH6KL_FW_CAPABILITY_INACTIVITY_TIMEOUT,
 
+	/* Firmware has support to override rsn cap of rsn ie */
 	ATH6KL_FW_CAPABILITY_RSN_CAP_OVERRIDE,
+
+	/*
+	 * Multicast support in WOW and host awake mode.
+	 * Allow all multicast in host awake mode.
+	 * Apply multicast filter in WOW mode.
+	 */
+	ATH6KL_FW_CAPABILITY_WOW_MULTICAST_FILTER,
+
+	/* Firmware supports enhanced bmiss detection */
+	ATH6KL_FW_CAPABILITY_BMISS_ENHANCE,
+
+	/*
+	 * FW supports matching of ssid in schedule scan
+	 */
+	ATH6KL_FW_CAPABILITY_SCHED_SCAN_MATCH_LIST,
 
 	/* this needs to be last */
 	ATH6KL_FW_CAPABILITY_MAX,
