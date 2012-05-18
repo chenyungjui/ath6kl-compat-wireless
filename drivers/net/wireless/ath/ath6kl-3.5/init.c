@@ -29,6 +29,7 @@
 #ifdef ATH6KL_DIAGNOSTIC 
 #include "diagnose.h"
 #endif
+#include "pm.h"
 
 unsigned int debug_mask;
 unsigned int htc_bundle_recv = 0;
@@ -36,6 +37,7 @@ unsigned int htc_bundle_send = 0;
 static unsigned int testmode;
 unsigned int ath6kl_wow_ext = 1;
 unsigned int ath6kl_wow_gpio = 8;
+unsigned int ath6kl_p2p;
 
 #ifdef CONFIG_QC_INTERNAL
 unsigned short reg_domain = 0xffff;
@@ -53,6 +55,7 @@ module_param(htc_bundle_send, uint, 0644);
 module_param(testmode, uint, 0644);
 module_param(ath6kl_wow_ext, uint, 0644);
 module_param(ath6kl_wow_gpio, uint, 0644);
+module_param(ath6kl_p2p, uint, 0644);
 
 static const struct ath6kl_hw hw_list[] = {
 	{
@@ -167,6 +170,30 @@ static const struct ath6kl_hw hw_list[] = {
 		.fw_default_board	= AR6004_HW_1_2_DEFAULT_BOARD_DATA_FILE,
 		.fw_epping		= AR6004_HW_1_2_EPPING_FILE,
 		.fw_softmac		= AR6004_HW_1_2_SOFTMAC_FILE,
+	},
+	{
+		.id				= AR6004_HW_1_3_VERSION,
+		.name				= "ar6004 hw 1.3",
+		.dataset_patch_addr		= 0x437860,
+		.app_load_addr			= 0x1234,
+		.board_ext_data_addr		= 0x437000,
+		.reserved_ram_size		= 7168,
+		.board_addr			= 0x436400,
+		.testscript_addr		= 0x434c00,
+
+		.fw = {
+			.dir		= AR6004_HW_1_3_FW_DIR,
+			.fw		= AR6004_HW_1_3_FIRMWARE_FILE,
+			.tcmd	        = AR6004_HW_1_3_TCMD_FIRMWARE_FILE,
+			.api2		= ATH6KL_FW_API2_FILE,
+			.utf		= AR6004_HW_1_3_UTF_FIRMWARE_FILE,
+			.testscript	= AR6004_HW_1_3_TESTSCRIPT_FILE,
+		},
+
+		.fw_board		= AR6004_HW_1_3_BOARD_DATA_FILE,
+		.fw_default_board	= AR6004_HW_1_3_DEFAULT_BOARD_DATA_FILE,
+		.fw_epping		= AR6004_HW_1_3_EPPING_FILE,
+		.fw_softmac		= AR6004_HW_1_3_SOFTMAC_FILE,
 	},
 	{
 		.id				= AR6004_HW_1_6_VERSION,
@@ -353,6 +380,10 @@ static int ath6kl_init_service_ep(struct ath6kl *ar)
 	struct htc_service_connect_req connect;
 
 	memset(&connect, 0, sizeof(connect));
+
+	if ( ar->version.target_ver == AR6004_HW_1_6_VERSION ) {
+		connect.conn_flags |= HTC_CONN_FLGS_DISABLE_CRED_FLOW_CTRL;
+	}
 
 	/* these fields are the same for all service endpoints */
 	connect.ep_cb.tx_comp_multi = ath6kl_tx_complete;
@@ -740,10 +771,6 @@ void ath6kl_core_free(struct ath6kl *ar)
 void ath6kl_core_cleanup(struct ath6kl *ar)
 {
 	ath6kl_hif_power_off(ar);
-
-#ifdef ATH6KL_DIAGNOSTIC 
-	wifi_diag_timer_destroy();
-#endif
 
 	destroy_workqueue(ar->ath6kl_wq);
 
@@ -1960,7 +1987,7 @@ int ath6kl_init_hw_start(struct ath6kl *ar)
 		}
 
 		ath6kl_dbg(ATH6KL_DBG_TRC, "%s: wmi is ready\n", __func__);
-		rttm_init();
+		rttm_init(ar);
 		/* communicate the wmi protocol verision to the target */
 		/* FIXME: return error */
 		if ((ath6kl_set_host_app_area(ar)) != 0)
@@ -2156,6 +2183,8 @@ int ath6kl_core_init(struct ath6kl *ar)
 	ar->conf_flags = ATH6KL_CONF_IGNORE_ERP_BARKER |
 			 ATH6KL_CONF_ENABLE_11N | ATH6KL_CONF_ENABLE_TX_BURST;
 
+        ath6kl_conn_list_init(ar);
+
 	if (ath6kl_mod_debug_quirks(ar, ATH6KL_MODULE_SUSPEND_CUTPOWER))
 		ar->conf_flags |= ATH6KL_CONF_SUSPEND_CUTPOWER;
 
@@ -2182,6 +2211,11 @@ int ath6kl_core_init(struct ath6kl *ar)
 	 */
 	memcpy(ndev->dev_addr, ar->mac_addr, ETH_ALEN);
 
+#ifdef ATH6KL_DIAGNOSTIC
+	if ( !test_bit(TESTMODE_EPPING, &ar->flag) )
+		wifi_diag_init();
+#endif
+
 	return ret;
 
 err_rxbuf_cleanup:
@@ -2194,6 +2228,9 @@ err_rxbuf_cleanup:
 err_debug_init:
 	ath6kl_debug_cleanup(ar);
 err_node_cleanup:
+#ifdef CONFIG_ANDROID	
+	ath6kl_cleanup_android_resource(ar);
+#endif
 	ath6kl_wmi_shutdown(ar->wmi);
 	clear_bit(WMI_ENABLED, &ar->flag);
 	ar->wmi = NULL;

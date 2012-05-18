@@ -66,7 +66,7 @@ static void htcoex_flush_bss_info(struct htcoex *coex)
 }
 
 static void htcoex_get_coexinfo(struct htcoex_bss_info *coex_bss,
-								struct htcoex_coex_info *coex_info)
+				struct htcoex_coex_info *coex_info)
 {
 	struct ieee80211_ht_cap *htcap;
 	struct ieee80211_mgmt *frame;
@@ -163,7 +163,7 @@ resche:
 }
 
 static void htcoex_send_action(struct ath6kl_vif *vif, 
-							   struct htcoex_coex_info *coex_info)
+			       struct htcoex_coex_info *coex_info)
 {
 	struct ath6kl *ar = vif->ar;
 	struct ieee80211_mgmt *action_frame;
@@ -207,19 +207,19 @@ static void htcoex_send_action(struct ath6kl_vif *vif,
 			into_chan_report_ie->chan_variable[i] = coex_info->chans[i];
 
 		len = 24 + 
-				sizeof(struct ieee80211_action_public) +
-			 	sizeof(struct ieee80211_bss_coex_ie) +
-			 	sizeof(struct ieee80211_intolerant_chan_report_ie) +
-			 	coex_info->num_chans;
+			sizeof(struct ieee80211_action_public) +
+		 	sizeof(struct ieee80211_bss_coex_ie) +
+		 	sizeof(struct ieee80211_intolerant_chan_report_ie) +
+		 	coex_info->num_chans;
 
 		ath6kl_dbg_dump(ATH6KL_DBG_RAW_BYTES, __func__, "tx-htcoex ",
 						(u8 *)action_frame, len);
 
 		BUG_ON(vif->bss_ch == 0);
 		ath6kl_wmi_send_action_cmd(ar->wmi, vif->fw_vif_idx, 
-									vif->send_action_id++,
-					  				vif->bss_ch, 0,
-					  				(u8 *)action_frame, len);
+					   vif->send_action_id++,
+					   vif->bss_ch, 0,
+					   (u8 *)action_frame, len);
 		kfree(action_frame);
 	} else {
 		ath6kl_err("failed to alloc memory for action_frame\n");
@@ -227,6 +227,34 @@ static void htcoex_send_action(struct ath6kl_vif *vif,
 
 	return;
 
+}
+
+static void htcoex_ht40_rateset(struct ath6kl_vif *vif, 
+			        struct htcoex *coex,
+			        bool enabled)
+{
+	struct ath6kl *ar = vif->ar;
+	u64 ratemask;
+
+	if (enabled)
+		ratemask = ATH6KL_HTCOEX_RATEMASK_HT40;
+	else
+		ratemask = ATH6KL_HTCOEX_RATEMASK_HT20;
+
+	ath6kl_dbg(ATH6KL_DBG_HTCOEX,
+		   "htcoex rateset (vif %p) HT40 rates %s, %llx -> %llx\n",
+		   vif,
+		   (enabled ? "Enabled" : "Disabled"),
+		   coex->current_ratemask,
+		   ratemask);
+
+	if (coex->current_ratemask != ratemask)
+		ath6kl_wmi_set_fix_rates(ar->wmi, vif->fw_vif_idx, 
+					 ratemask);
+
+	coex->current_ratemask = ratemask;
+
+	return;
 }
 
 struct htcoex *ath6kl_htcoex_init(struct ath6kl_vif *vif)
@@ -244,6 +272,7 @@ struct htcoex *ath6kl_htcoex_init(struct ath6kl_vif *vif)
 	/* Disable by default. */
 	coex->flags &= ~ATH6KL_HTCOEX_FLAGS_ENABLED;
 	coex->scan_interval = ATH6KL_HTCOEX_SCAN_PERIOD;
+	coex->rate_rollback_interval = ATH6KL_HTCOEX_RATE_ROLLBACK;
 
 	/* Init. periodic scan timer. */
 	init_timer(&coex->scan_timer);
@@ -287,9 +316,9 @@ void ath6kl_htcoex_deinit(struct ath6kl_vif *vif)
 }
 
 void ath6kl_htcoex_bss_info(struct ath6kl_vif *vif, 
-							struct ieee80211_mgmt *mgmt, 
-							int len,
-							struct ieee80211_channel *channel)
+			    struct ieee80211_mgmt *mgmt, 
+			    int len,
+			    struct ieee80211_channel *channel)
 {
 	struct htcoex *coex = vif->htcoex_ctx;
 	struct htcoex_bss_info *coex_bss, *tmp;
@@ -370,10 +399,21 @@ int ath6kl_htcoex_scan_complete_event(struct ath6kl_vif *vif, bool aborted)
 		htcoex_get_coexinfo(coex_bss, &coex_info);
 	}
 
-	/* Finally, send action frame to AP. */
+	/* Send action frame to AP. */
 	if (coex_info.intolerant40 ||
-		coex_info.num_chans)
+  	    coex_info.num_chans)
 		htcoex_send_action(vif, &coex_info);
+
+	/* Disable HT40 rates. */
+	if (coex_info.intolerant40) {
+		htcoex_ht40_rateset(vif, coex, false);
+		coex->tolerant40_cnt = 0;
+	} else {
+		/* Roll-back to HT40 rate if acceptable. */
+		if (coex->rate_rollback_interval &&
+		    (++coex->tolerant40_cnt > coex->rate_rollback_interval))
+			htcoex_ht40_rateset(vif, coex, true);
+	}
 
 	/* Issue by htcoex. */
 	if (vif->scan_req == &coex->request) {
@@ -412,8 +452,8 @@ void ath6kl_htcoex_connect_event(struct ath6kl_vif *vif)
 	if ((coex->flags & ATH6KL_HTCOEX_FLAGS_ENABLED) &&
 		(bss->channel->band == NL80211_BAND_2GHZ) &&
 		(htcoex_get_elem(WLAN_EID_HT_CAPABILITY, 		/* FIXME : other way? */
-						bss->information_elements,
-						bss->len_information_elements) != NULL)){
+				 bss->information_elements,
+				 bss->len_information_elements) != NULL)){
 		if (coex->flags & ATH6KL_HTCOEX_FLAGS_START)
 			del_timer(&coex->scan_timer);
 
@@ -426,15 +466,18 @@ void ath6kl_htcoex_connect_event(struct ath6kl_vif *vif)
 		coex->flags &= ~ATH6KL_HTCOEX_FLAGS_START;
 
 	coex->num_scan = 0;
+	coex->tolerant40_cnt = 0;
+	coex->current_ratemask = ATH6KL_HTCOEX_RATEMASK_FULL;
 	htcoex_flush_bss_info(coex);
 
 	cfg80211_put_bss(bss);
 
 	ath6kl_dbg(ATH6KL_DBG_HTCOEX,
-		   "htcoex connect (vif %p) flags %x interval %d\n",
+		   "htcoex connect (vif %p) flags %x interval %d cycle %d\n",
 		   vif,
 		   coex->flags,
-		   coex->scan_interval);
+		   coex->scan_interval,
+		   coex->rate_rollback_interval);
 
 	return;
 }
@@ -454,6 +497,10 @@ void ath6kl_htcoex_disconnect_event(struct ath6kl_vif *vif)
 	if (coex->flags & ATH6KL_HTCOEX_FLAGS_START) {
 		del_timer(&coex->scan_timer);
 		coex->flags &= ~ATH6KL_HTCOEX_FLAGS_START;
+
+		/* Back to full rates */
+		ath6kl_wmi_set_fix_rates(vif->ar->wmi, vif->fw_vif_idx, 
+					 ATH6KL_HTCOEX_RATEMASK_FULL);
 	}
 
 	htcoex_flush_bss_info(coex);
@@ -461,7 +508,7 @@ void ath6kl_htcoex_disconnect_event(struct ath6kl_vif *vif)
 	return;
 }
 
-int ath6kl_htcoex_config(struct ath6kl_vif *vif, u32 interval)
+int ath6kl_htcoex_config(struct ath6kl_vif *vif, u32 interval, u8 rate_rollback)
 {
 	struct htcoex *coex = vif->htcoex_ctx;
 	int restart = 0;
@@ -486,15 +533,18 @@ int ath6kl_htcoex_config(struct ath6kl_vif *vif, u32 interval)
 			mod_timer(&coex->scan_timer, jiffies + msecs_to_jiffies(coex->scan_interval));				
 			coex->flags |= ATH6KL_HTCOEX_FLAGS_START;
 		}
+
+		coex->rate_rollback_interval = rate_rollback;
 	}
 
 	htcoex_flush_bss_info(coex);
 
 	ath6kl_dbg(ATH6KL_DBG_HTCOEX,
-		   "htcoex config (vif %p interval %d %s restart %d)\n",
+		   "htcoex config (vif %p interval %d %s rate_rollback %d restart %d)\n",
 		   vif,
 		   coex->scan_interval,
 		   (coex->flags & ATH6KL_HTCOEX_FLAGS_ENABLED) ? "ON" : "OFF",
+		   coex->rate_rollback_interval,
 		   restart);
 
 

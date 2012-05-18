@@ -24,22 +24,10 @@
 
 extern unsigned int diag_local_test;
 extern struct wmi *globalwmi;
-static u32 cfg_mask = 0;
 static wifi_diag_event_callback_t diag_evt_callback = NULL;
 struct sk_buff_head diag_events;
 static DEFINE_MUTEX(diag_event_mutex);
-static bool diag_event_init = false;
-static u8 tx_frame_type = 0;
-static u8 tx_frame_subtype = 0;
-static u16 tx_frame_len = 0;
-static u32 pre_rx_clear_cnt = 0;
-static u32 pre_rx_frame_cnt = 0;
 
-static wifi_diag_tx_stat_event_t tx_stat;
-static wifi_diag_rx_stat_event_t rx_stat;
-struct timer_list tx_stat_timer, rx_stat_timer;
-struct timer_list interference_timer, rxtime_timer;
-static u32 tx_timer_val, rx_timer_val;
 
 typedef enum {
 	WIFI_DIAG_PM_STATE_SLEEP = 1,
@@ -144,7 +132,7 @@ ath6kl_wmi_rxtime_cmd(struct wmi *wmi)
 	struct sk_buff *skb;
 	int ret;
 
-	skb = ath6kl_wmi_get_new_buf(sizeof(struct wmix_cmd_hdr));
+	skb = ath6kl_wmi_get_new_buf(sizeof(struct wmid_cmd_hdr));
 	if (!skb)
 		return -ENOMEM;
 
@@ -159,7 +147,7 @@ ath6kl_wmi_pktlog_enable_cmd(struct wmi *wmi, struct wmi_enable_pktlog_cmd *opti
 	struct sk_buff *skb;
 	struct wmi_enable_pktlog_cmd *cmd;
 	int status = 0;
-    
+
 	skb = ath6kl_wmi_get_new_buf(sizeof(struct wmi_enable_pktlog_cmd));
 	if (!skb)
 		return -ENOMEM;
@@ -208,6 +196,10 @@ ath6kl_wmi_pktlog_event_rx(struct wmi *wmi, u8 *datap, u32 len)
 	u8 *pdata = NULL;
 	struct ath_pktlog_hdr *log_hdr = (struct ath_pktlog_hdr *)datap ;
 	u32 offset = 0;
+	struct ath6kl_vif *vif = ath6kl_get_vif_by_index(wmi->parent_dev, 0);
+	
+	if (vif == NULL)
+		return -1;
 
 	//printk("pklog at %p skb_len %d\n", datap, len);
 
@@ -215,15 +207,15 @@ ath6kl_wmi_pktlog_event_rx(struct wmi *wmi, u8 *datap, u32 len)
 		switch (le16_to_cpu(log_hdr->log_type)) {
 		case PKTLOG_TYPE_TXSTATUS:  
 			pdata = (u8 *)log_hdr + sizeof(struct ath_pktlog_hdr);
-			wifi_diag_mac_tx_frame_event((struct ath_pktlog_txstatus *)pdata);
+			wifi_diag_mac_tx_frame_event(vif, (struct ath_pktlog_txstatus *)pdata);
 			break;
 		case PKTLOG_TYPE_TXCTL:
 			pdata = (u8 *)log_hdr + sizeof(struct ath_pktlog_hdr);
-			wifi_diag_mac_txctrl_event((struct ath_pktlog_txctl *)pdata);
+			wifi_diag_mac_txctrl_event(vif, (struct ath_pktlog_txctl *)pdata);
 			break;
 		case PKTLOG_TYPE_RX:                
 			pdata = (u8 *)log_hdr + sizeof(struct ath_pktlog_hdr);
-			wifi_diag_mac_rx_frame_event((struct ath_pktlog_rx *)pdata);
+			wifi_diag_mac_rx_frame_event(vif, (struct ath_pktlog_rx *)pdata);
 			break;
 		default:
 			break;
@@ -237,68 +229,52 @@ ath6kl_wmi_pktlog_event_rx(struct wmi *wmi, u8 *datap, u32 len)
 }
 
 int
-ath6kl_wmi_start_scan_event(void)
+ath6kl_wmi_start_scan_event(struct ath6kl_vif *vif, u32 seq_num)
 {
 	wifi_diag_mac_fsm_t fsm_event = WIFI_DIAG_MAC_FSM_SCANNING;
 	printk("ath6kl_wmi_start_scan_event\n");
-	wifi_diag_mac_fsm_event(fsm_event);
+	wifi_diag_mac_fsm_event(vif, fsm_event, seq_num);
 	return 0;
 }
 
 int
-ath6kl_wmi_fsm_auth_event(void)
+ath6kl_wmi_fsm_auth_event(struct ath6kl_vif *vif, u32 seq_num)
 {
 	wifi_diag_mac_fsm_t fsm_event = WIFI_DIAG_MAC_FSM_AUTH;
 	printk("ath6kl_wmi_fsm_auth_event\n");
-	wifi_diag_mac_fsm_event(fsm_event);
+	wifi_diag_mac_fsm_event(vif, fsm_event, seq_num);
 	return 0;
 }
 
 int
-ath6kl_wmi_fsm_assoc_event(void)
+ath6kl_wmi_fsm_assoc_event(struct ath6kl_vif *vif, u32 seq_num)
 {
 	wifi_diag_mac_fsm_t fsm_event = WIFI_DIAG_MAC_FSM_ASSOC;
 	printk("ath6kl_wmi_fsm_assoc_event\n");
-	wifi_diag_mac_fsm_event(fsm_event);
+	wifi_diag_mac_fsm_event(vif, fsm_event, seq_num);
 	return 0;
 }
 
 int
-ath6kl_wmi_fsm_deauth_event(void)
+ath6kl_wmi_fsm_deauth_event(struct ath6kl_vif *vif, u32 seq_num)
 {
 	wifi_diag_mac_fsm_t fsm_event = WIFI_DIAG_MAC_FSM_DEAUTH;
 	printk("ath6kl_wmi_fsm_deauth_event\n");
-	wifi_diag_mac_fsm_event(fsm_event);
+	wifi_diag_mac_fsm_event(vif, fsm_event, seq_num);
 	return 0;
 }
 
 int
-ath6kl_wmi_fsm_disassoc_event(void)
+ath6kl_wmi_fsm_disassoc_event(struct ath6kl_vif *vif, u32 seq_num)
 {
 	wifi_diag_mac_fsm_t fsm_event = WIFI_DIAG_MAC_FSM_DISASSOC;
 	printk("ath6kl_wmi_fsm_disassoc_event\n");
-	wifi_diag_mac_fsm_event(fsm_event);
+	wifi_diag_mac_fsm_event(vif, fsm_event, seq_num);
 	return 0;
 }
 
 int 
-ath6kl_wmi_stat_rx_rate_event(struct wmi *wmi, u8 *datap, int len)
-{
-	printk("ath6kl_wmi_stat_rx_rate_event\n");
-	memcpy(&rx_stat.rx_rate_pkt[0], datap, sizeof(u32)*44);
-	return 0;
-}
-
-int 
-ath6kl_wmi_stat_tx_rate_event(struct wmi *wmi, u8 *datap, int len)
-{
-	printk("ath6kl_wmi_stat_tx_rate_event\n");
-	memcpy(&tx_stat.tx_rate_pkt[0], datap, sizeof(u32)*44);
-	return 0;
-}
-
-int 
-ath6kl_wmi_pwrsave_event(struct wmi *wmi, u8 *datap, int len)
+ath6kl_wmi_pwrsave_event(struct ath6kl_vif *vif, struct wmi *wmi, u8 *datap, int len, u32 seq_num)
 {
 	struct wmid_pwr_save_event *state=(struct wmid_pwr_save_event *)datap;
 	wifi_diag_pwrsave_t  oldpwrsave, pmpwrsave;
@@ -320,7 +296,7 @@ ath6kl_wmi_pwrsave_event(struct wmi *wmi, u8 *datap, int len)
 		return 0;
 		break;
 	}
-	wifi_diag_send_pwrsave_event(oldpwrsave);
+	wifi_diag_send_pwrsave_event(vif, oldpwrsave, seq_num);
 
 	switch (state->pmState) {
 	case WIFI_DIAG_PM_STATE_SLEEP:
@@ -336,17 +312,18 @@ ath6kl_wmi_pwrsave_event(struct wmi *wmi, u8 *datap, int len)
 		return 0;
 		break;
 	}
-	wifi_diag_send_pwrsave_event(pmpwrsave);
+	wifi_diag_send_pwrsave_event(vif, pmpwrsave, seq_num);
 
 	return 0;
 }
 
 int 
-ath6kl_wmi_diag_event(struct wmi *wmi, struct sk_buff *skb)
+ath6kl_wmi_diag_event(struct ath6kl_vif *vif, struct wmi *wmi, struct sk_buff *skb)
 {
 	struct wmid_cmd_hdr *cmd;
 	u32 len;
 	u16 id;
+	u32 seq_num;
 	u8 *datap;
 	int ret = 0;
 
@@ -357,6 +334,7 @@ ath6kl_wmi_diag_event(struct wmi *wmi, struct sk_buff *skb)
 
 	cmd = (struct wmid_cmd_hdr *) skb->data;
 	id = le32_to_cpu(cmd->cmd_id);
+	seq_num = le32_to_cpu(cmd->seq_num);
 
 	skb_pull(skb, sizeof(struct wmid_cmd_hdr));
 
@@ -365,35 +343,41 @@ ath6kl_wmi_diag_event(struct wmi *wmi, struct sk_buff *skb)
 
 	switch (id) {
 	case WMID_START_SCAN_EVENTID:
-		ret = ath6kl_wmi_start_scan_event();
+		ret = ath6kl_wmi_start_scan_event(vif, seq_num);
 		break;
 	case WMID_FSM_AUTH_EVENTID:
-		ret = ath6kl_wmi_fsm_auth_event();
+		ret = ath6kl_wmi_fsm_auth_event(vif, seq_num);
 		break;
 	case WMID_FSM_ASSOC_EVENTID:
-		ret = ath6kl_wmi_fsm_assoc_event();
+		ret = ath6kl_wmi_fsm_assoc_event(vif, seq_num);
 		break;
 	case WMID_FSM_DEAUTH_EVENTID:
-		ret = ath6kl_wmi_fsm_deauth_event();
+		ret = ath6kl_wmi_fsm_deauth_event(vif, seq_num);
 		break;
 	case WMID_FSM_DISASSOC_EVENTID:
-		ret = ath6kl_wmi_fsm_disassoc_event();
+		ret = ath6kl_wmi_fsm_disassoc_event(vif, seq_num);
 		break;
 	case WMID_STAT_RX_RATE_EVENTID:
-		ret = ath6kl_wmi_stat_rx_rate_event(wmi, datap, len);
+		ret = ath6kl_wmi_stat_rx_rate_event(vif, wmi, datap, len, seq_num);
 		break;
 	case WMID_STAT_TX_RATE_EVENTID:
-		ret = ath6kl_wmi_stat_tx_rate_event(wmi, datap, len);
+		ret = ath6kl_wmi_stat_tx_rate_event(vif, wmi, datap, len, seq_num);
 		break;
 	case WMID_INTERFERENCE_EVENTID:
-		ath6kl_wmi_interference_event(wmi,datap,len);		
+		ath6kl_wmi_interference_event(vif, wmi, datap, len, seq_num);
 		break;
 	case WMID_RXTIME_EVENTID:
-		ath6kl_wmi_rxtime_event(wmi,datap,len);
+		ath6kl_wmi_rxtime_event(vif, wmi, datap, len, seq_num);
 		break;
 	case WMID_PWR_SAVE_EVENTID:
-		ath6kl_wmi_pwrsave_event(wmi,datap,len);
-		break;	    
+		ath6kl_wmi_pwrsave_event(vif, wmi, datap, len, seq_num);
+		break;
+	case WMID_FSM_CONNECT_EVENTID:
+		vif->diag.connect_seq_num = seq_num;
+		break;
+	case WMID_FSM_DISCONNECT_EVENTID:
+		vif->diag.disconnect_seq_num = seq_num;
+		break;
 	default:
 		printk("unknown cmd id 0x%x\n", id);
 		ret = -EINVAL;
@@ -421,13 +405,18 @@ wifi_diag_drv_register( void *diag_hdl)
 wifi_diag_status_t 
 wifi_diag_drv_unregister(void * drv_hdl)
 {
+	struct ath6kl_vif *vif = ath6kl_get_vif_by_index(globalwmi->parent_dev, 0);
+
 	wifi_diag_status_t diag_status = WIFI_DIAG_EOK;
 	ath6kl_wmi_macfilter_cmd(globalwmi, WMI_PKTLOG_EVENT_TX | WMI_PKTLOG_EVENT_RX, 
 				WIFI_DIAG_MACFILTER_DISABLEALL, WIFI_DIAG_MACFILTER_DISABLEALL);
 	ath6kl_wmi_pktlog_disable_cmd(globalwmi);
 	ath6kl_wmi_fsm_cmd(globalwmi, false);
 	ath6kl_wmi_pwrsave_cmd(globalwmi, false);
-	wifi_diag_timer_destroy();
+	
+	if (vif != NULL)
+		wifi_diag_timer_destroy(vif);
+
 	return diag_status;
 }
 
@@ -435,10 +424,14 @@ wifi_diag_status_t
 wifi_diag_register_event_callback(void *drv_hdl, wifi_diag_event_callback_t evt_callback)
 {
 	wifi_diag_status_t diag_status = WIFI_DIAG_EOK;
+	struct ath6kl_vif *vif = ath6kl_get_vif_by_index(globalwmi->parent_dev, 0);
 
-	if (!diag_event_init) {
+	if (vif == NULL)
+		return WIFI_DIAG_ENXIO;
+
+	if (!vif->diag.diag_event_init) {
 		skb_queue_head_init(&diag_events);
-		diag_event_init = true;
+		vif->diag.diag_event_init = true;
 	}
 	diag_evt_callback = evt_callback;
 
@@ -449,7 +442,8 @@ wifi_diag_status_t
 wifi_diag_cmd_send(void *drv_hdl, wifi_diag_cmd_t *cmd)
 {
 	wifi_diag_status_t diag_status = WIFI_DIAG_EOK;
-    
+	struct ath6kl_vif *vif = ath6kl_get_vif_by_index(globalwmi->parent_dev, 0);
+
 	switch (cmd->cmd_id)
 	{
 	case  WIFI_DIAG_MAC_TX_FILTER_CMDID:
@@ -472,7 +466,11 @@ wifi_diag_cmd_send(void *drv_hdl, wifi_diag_cmd_t *cmd)
 		if (cmd->len == sizeof(struct _wifi_diag_cfg_cmd_t))
 		{
 			wifi_diag_cfg_cmd_t *pcfg = (wifi_diag_cfg_cmd_t *)cmd->cmd_data;
-			if(pcfg->cfg!= cfg_mask)
+
+			if (vif == NULL)
+				return WIFI_DIAG_ENXIO;
+
+			if(pcfg->cfg!= vif->diag.cfg_mask)
 			{
 				if (pcfg->cfg & (WIFI_DIAG_MAC_TX_FRAME_EVENTENABLE | WIFI_DIAG_MAC_RX_FRAME_EVENTENABLE)) 
 				{
@@ -507,22 +505,22 @@ wifi_diag_cmd_send(void *drv_hdl, wifi_diag_cmd_t *cmd)
 
 				if (pcfg->cfg & WIFI_DIAG_INTERFERENCE_EVENTENABLE)
 				{
-					del_timer(&interference_timer);
-					init_timer(&interference_timer);
-					setup_timer(&interference_timer, wifi_diag_interference_timer_handler, (unsigned long) globalwmi);
-					mod_timer(&interference_timer, jiffies + msecs_to_jiffies(1000));
+					del_timer(&vif->diag.interference_timer);
+					init_timer(&vif->diag.interference_timer);
+					setup_timer(&vif->diag.interference_timer, wifi_diag_interference_timer_handler, (unsigned long) vif);
+					mod_timer(&vif->diag.interference_timer, jiffies + msecs_to_jiffies(1000));
 				} else {
-					del_timer(&interference_timer);
+					del_timer(&vif->diag.interference_timer);
 				}
 
 				if (pcfg->cfg & WIFI_DIAG_RX_TIME_EVENTENABLE)
 				{
-					del_timer(&rxtime_timer);
-					init_timer(&rxtime_timer);
-					setup_timer(&rxtime_timer, wifi_diag_rxtime_timer_handler, (unsigned long) globalwmi);
-					mod_timer(&rxtime_timer, jiffies + msecs_to_jiffies(1000));
+					del_timer(&vif->diag.rxtime_timer);
+					init_timer(&vif->diag.rxtime_timer);
+					setup_timer(&vif->diag.rxtime_timer, wifi_diag_rxtime_timer_handler, (unsigned long) vif);
+					mod_timer(&vif->diag.rxtime_timer, jiffies + msecs_to_jiffies(1000));
 				} else {
-					del_timer(&rxtime_timer);
+					del_timer(&vif->diag.rxtime_timer);
 				}
 
 				if (pcfg->cfg & WIFI_DIAG_PWR_SAVE_EVENTENABLE)
@@ -534,31 +532,29 @@ wifi_diag_cmd_send(void *drv_hdl, wifi_diag_cmd_t *cmd)
 
 				if (pcfg->cfg & WIFI_DIAG_TX_STAT_EVENTENABLE)
 				{
-					tx_timer_val = pcfg->value; 
+					vif->diag.tx_timer_val = pcfg->value; 
 
-					del_timer(&tx_stat_timer);
-					init_timer(&tx_stat_timer);
-					setup_timer(&tx_stat_timer, wifi_diag_tx_stat_timer_handler, (unsigned long) globalwmi);
-					mod_timer(&tx_stat_timer, jiffies + msecs_to_jiffies(tx_timer_val));
+					del_timer(&vif->diag.tx_stat_timer);
+					init_timer(&vif->diag.tx_stat_timer);
+					setup_timer(&vif->diag.tx_stat_timer, wifi_diag_tx_stat_timer_handler, (unsigned long) vif);
+					mod_timer(&vif->diag.tx_stat_timer, jiffies + msecs_to_jiffies(vif->diag.tx_timer_val));
 				} else {
-					del_timer(&tx_stat_timer);
-					memset(&tx_stat, 0, sizeof(wifi_diag_tx_stat_event_t));
+					del_timer(&vif->diag.tx_stat_timer);
 				}
 
 				if (pcfg->cfg & WIFI_DIAG_RX_STAT_EVENTENABLE)
 				{
-					rx_timer_val = pcfg->value;                        
+					vif->diag.rx_timer_val = pcfg->value;                        
 
-					del_timer(&rx_stat_timer);
-					init_timer(&rx_stat_timer);
-					setup_timer(&rx_stat_timer, wifi_diag_rx_stat_timer_handler, (unsigned long) globalwmi);
-					mod_timer(&rx_stat_timer, jiffies + msecs_to_jiffies(rx_timer_val));
+					del_timer(&vif->diag.rx_stat_timer);
+					init_timer(&vif->diag.rx_stat_timer);
+					setup_timer(&vif->diag.rx_stat_timer, wifi_diag_rx_stat_timer_handler, (unsigned long) vif);
+					mod_timer(&vif->diag.rx_stat_timer, jiffies + msecs_to_jiffies(vif->diag.rx_timer_val));
 				} else {
-					del_timer(&rx_stat_timer);
-					memset(&rx_stat, 0, sizeof(wifi_diag_rx_stat_event_t));
+					del_timer(&vif->diag.rx_stat_timer);
 				}
 
-				cfg_mask = pcfg->cfg;
+				vif->diag.cfg_mask = pcfg->cfg;
 			}
 		}
 
@@ -635,7 +631,7 @@ static void wifi_diag_event_process(struct work_struct *work)
 		if (!diag_local_test) {
 			diag_evt_callback((void *)&wifi_drv_hdl_table, skb);
 		} else {
-			printk("eventid=%d\n", pwifi_diag_event->event_id);		
+			printk("eventid=%d seq_num=%d\n", pwifi_diag_event->event_id, pwifi_diag_event->seq_num);		
 			switch(pwifi_diag_event->event_id) {
 				case WIFI_DIAG_MAC_TX_FRAME_EVENTID:
 				{
@@ -752,7 +748,7 @@ static DECLARE_WORK(wifi_diag_event_work, wifi_diag_event_process);
 
 
 void
-wifi_diag_mac_tx_frame_event(struct ath_pktlog_txstatus *txstatus_log)
+wifi_diag_mac_tx_frame_event(struct ath6kl_vif *vif, struct ath_pktlog_txstatus *txstatus_log)
 {
 	wifi_diag_event_t *pwifi_diag_txframe_event;
 	wifi_diag_mac_tx_frame_event_t *ptx_frame_event_data;
@@ -763,7 +759,7 @@ wifi_diag_mac_tx_frame_event(struct ath_pktlog_txstatus *txstatus_log)
 	u32 tx_buf_len = 0;
 
 	if (!diag_local_test) {
-		if(!(cfg_mask & WIFI_DIAG_MAC_TX_FRAME_EVENTENABLE) || diag_evt_callback == NULL)
+		if(!(vif->diag.cfg_mask & WIFI_DIAG_MAC_TX_FRAME_EVENTENABLE) || diag_evt_callback == NULL)
 			return;    
 	}
 
@@ -774,6 +770,7 @@ wifi_diag_mac_tx_frame_event(struct ath_pktlog_txstatus *txstatus_log)
         
 	pwifi_diag_txframe_event = (wifi_diag_event_t *) skb->data;
 	pwifi_diag_txframe_event->event_id = WIFI_DIAG_MAC_TX_FRAME_EVENTID;
+	pwifi_diag_txframe_event->seq_num = le32_to_cpu(txstatus_log->misc[2]);
 	ptx_frame_event_data = (wifi_diag_mac_tx_frame_event_t *)pwifi_diag_txframe_event->event_data;
     
 	ptx_frame_event_data->tx_pwr = txstatus_log->misc[1];
@@ -783,15 +780,15 @@ wifi_diag_mac_tx_frame_event(struct ath_pktlog_txstatus *txstatus_log)
 	ptx_frame_event_data->tx_mcs = tx_mcs;
 	sgi = (txstatus_log->misc[0]>>8) & WHAL_RC_FLAG_SGI;
 	ptx_frame_event_data->tx_bitrate = _rate_tbl_11[tx_mcs][sgi];
-	ptx_frame_event_data->frame_type = tx_frame_type;
-	ptx_frame_event_data->frame_sub_type = tx_frame_subtype;
-	ptx_frame_event_data->frame_length = tx_frame_len;
+	ptx_frame_event_data->frame_type = vif->diag.tx_frame_type;
+	ptx_frame_event_data->frame_sub_type = vif->diag.tx_frame_subtype;
+	ptx_frame_event_data->frame_length = vif->diag.tx_frame_len;
 
 	tx_buf_len = le32_to_cpu(txstatus_log->buf_len);
 	pwifi_diag_txframe_event->len = tx_buf_len + sizeof(*ptx_frame_event_data) - 1;
 
 	if (ptx_frame_event_data->frame_data != 0) {
-		u16 framectrl = tx_frame_subtype<<4 | tx_frame_type;
+		u16 framectrl = vif->diag.tx_frame_subtype<<4 | vif->diag.tx_frame_type;
 
 		memset(ptx_frame_event_data->frame_data, 0, 512);
 		/* skip 2 pad bytes after qos header, assume there are no addr4 */
@@ -804,7 +801,7 @@ wifi_diag_mac_tx_frame_event(struct ath_pktlog_txstatus *txstatus_log)
 		}
 	}
 
-	if (diag_event_init) {
+	if (vif->diag.diag_event_init) {
 		skb_queue_tail(&diag_events, skb);
 		schedule_work(&wifi_diag_event_work);
 	}
@@ -812,23 +809,23 @@ wifi_diag_mac_tx_frame_event(struct ath_pktlog_txstatus *txstatus_log)
 
 /* record last descriptor's type, subtype and len for tx log*/
 void
-wifi_diag_mac_txctrl_event(struct ath_pktlog_txctl *txctrl_log)
+wifi_diag_mac_txctrl_event(struct ath6kl_vif *vif, struct ath_pktlog_txctl *txctrl_log)
 {
 	struct tx_ctrl_desc *txctrl;
 
 	if (!diag_local_test) {
-		if(!(cfg_mask & WIFI_DIAG_MAC_TX_FRAME_EVENTENABLE) || diag_evt_callback == NULL)
+		if(!(vif->diag.cfg_mask & WIFI_DIAG_MAC_TX_FRAME_EVENTENABLE) || diag_evt_callback == NULL)
 			return;    
 	}
 
-	tx_frame_type = le16_to_cpu(txctrl_log->framectrl) & IEEE80211_FC0_TYPE_MASK;
-	tx_frame_subtype = (le16_to_cpu(txctrl_log->framectrl) & IEEE80211_FC0_SUBTYPE_MASK)>>4;
+	vif->diag.tx_frame_type = le16_to_cpu(txctrl_log->framectrl) & IEEE80211_FC0_TYPE_MASK;
+	vif->diag.tx_frame_subtype = (le16_to_cpu(txctrl_log->framectrl) & IEEE80211_FC0_SUBTYPE_MASK)>>4;
 	txctrl = (struct tx_ctrl_desc *)txctrl_log->txdesc_ctl;
-	tx_frame_len = le16_to_cpu(WHAL_TXDESC_GET_FRAME_LEN(txctrl));
+	vif->diag.tx_frame_len = le16_to_cpu(WHAL_TXDESC_GET_FRAME_LEN(txctrl));
 }
 
 void
-wifi_diag_mac_rx_frame_event(struct ath_pktlog_rx *rx_log)
+wifi_diag_mac_rx_frame_event(struct ath6kl_vif *vif, struct ath_pktlog_rx *rx_log)
 {
 	wifi_diag_event_t *pwifi_diag_rxframe_event;
 	wifi_diag_mac_rx_frame_event_t *prx_frame_event_data;
@@ -839,7 +836,7 @@ wifi_diag_mac_rx_frame_event(struct ath_pktlog_rx *rx_log)
 	u32 rx_mcs = 0, rx_buf_len = 0;
 
 	if (!diag_local_test) {
-		if(!(cfg_mask & WIFI_DIAG_MAC_RX_FRAME_EVENTID) || diag_evt_callback == NULL)
+		if(!(vif->diag.cfg_mask & WIFI_DIAG_MAC_RX_FRAME_EVENTID) || diag_evt_callback == NULL)
 			return;    
 	}
     
@@ -850,6 +847,7 @@ wifi_diag_mac_rx_frame_event(struct ath_pktlog_rx *rx_log)
 
 	pwifi_diag_rxframe_event = (wifi_diag_event_t *) skb->data;
 	pwifi_diag_rxframe_event->event_id = WIFI_DIAG_MAC_RX_FRAME_EVENTID;
+	pwifi_diag_rxframe_event->seq_num = rx_log->seq_num;
 	prx_frame_event_data = (wifi_diag_mac_rx_frame_event_t *)pwifi_diag_rxframe_event->event_data;
 	rxstatus = (struct rx_desc_status *)&rx_log->rxstatus[0];
 	prx_frame_event_data->rssi =  le16_to_cpu(rxstatus->rsRssi) + rx_log->calibratednf;  //this needs to be compensated with nosie floor later
@@ -883,14 +881,14 @@ wifi_diag_mac_rx_frame_event(struct ath_pktlog_rx *rx_log)
 		}	
 	}
 
-	if (diag_event_init) {
+	if (vif->diag.diag_event_init) {
 		skb_queue_tail(&diag_events, skb);
 		schedule_work(&wifi_diag_event_work);
 	}
 }
 
 void
-wifi_diag_mac_fsm_event(wifi_diag_mac_fsm_t eventtype)
+wifi_diag_mac_fsm_event(struct ath6kl_vif *vif, wifi_diag_mac_fsm_t eventtype, u32 seq_num)
 {
 	wifi_diag_event_t *pwifi_diag_event;
 	wifi_diag_mac_fsm_event_t *pfsm_event_data;
@@ -898,7 +896,7 @@ wifi_diag_mac_fsm_event(wifi_diag_mac_fsm_t eventtype)
 	u32 size;
 
 	if (!diag_local_test) {
-		if(!(cfg_mask & WIFI_DIAG_MAC_FSM_EVENTENABLE) || diag_evt_callback == NULL)
+		if(!(vif->diag.cfg_mask & WIFI_DIAG_MAC_FSM_EVENTENABLE) || diag_evt_callback == NULL)
 			return;
 	}
     
@@ -909,74 +907,19 @@ wifi_diag_mac_fsm_event(wifi_diag_mac_fsm_t eventtype)
     
 	pwifi_diag_event = (wifi_diag_event_t *) skb->data;
 	pwifi_diag_event->event_id = WIFI_DIAG_MAC_FSM_EVENTID;
+	pwifi_diag_event->seq_num = seq_num;
 	pwifi_diag_event->len = sizeof(*pfsm_event_data);
 	pfsm_event_data = (wifi_diag_mac_fsm_event_t *)pwifi_diag_event->event_data;
 	pfsm_event_data->fsm = eventtype;
 
-	if (diag_local_test) {
-		if (eventtype == WIFI_DIAG_MAC_FSM_CONNECTED)
-		{
-			if (!diag_event_init) {
-				skb_queue_head_init(&diag_events);
-				diag_event_init = true;
-			}
-
-			ath6kl_wmi_fsm_cmd(globalwmi, true);
-			ath6kl_wmi_pwrsave_cmd(globalwmi, true);
-
-			del_timer(&interference_timer);
-			init_timer(&interference_timer);
-			setup_timer(&interference_timer, wifi_diag_interference_timer_handler, (unsigned long) globalwmi);
-			mod_timer(&interference_timer, jiffies + msecs_to_jiffies(1000));                    
-
-			del_timer(&rxtime_timer);
-			init_timer(&rxtime_timer);
-			setup_timer(&rxtime_timer, wifi_diag_rxtime_timer_handler, (unsigned long) globalwmi);
-			mod_timer(&rxtime_timer, jiffies + msecs_to_jiffies(1000));   
-
-			del_timer(&tx_stat_timer);
-			init_timer(&tx_stat_timer);
-			setup_timer(&tx_stat_timer, wifi_diag_tx_stat_timer_handler, (unsigned long) globalwmi);
-			tx_timer_val = 2000;
-			mod_timer(&tx_stat_timer, jiffies + msecs_to_jiffies(tx_timer_val));                    
-
-			del_timer(&rx_stat_timer);
-			init_timer(&rx_stat_timer);
-			setup_timer(&rx_stat_timer, wifi_diag_rx_stat_timer_handler, (unsigned long) globalwmi);
-			rx_timer_val = 2000;    
-			mod_timer(&rx_stat_timer, jiffies + msecs_to_jiffies(rx_timer_val)); 
-
-			ath6kl_wmi_macfilter_cmd(globalwmi, WMI_PKTLOG_EVENT_TX | WMI_PKTLOG_EVENT_RX, 
-						WIFI_DIAG_MACFILTER_ENABLEALL & WIFI_DIAG_MACFILTER_LOW_MASK, 
-						WIFI_DIAG_MACFILTER_ENABLEALL & WIFI_DIAG_MACFILTER_HIGH_MASK);
-			{
-			struct wmi_enable_pktlog_cmd cmd;
-			cmd.option = WMI_PKTLOG_OPTION_LOG_DIAGNOSTIC;
-			cmd.evlist = WMI_PKTLOG_EVENT_TX | WMI_PKTLOG_EVENT_RX;
-			cmd.trigger_interval = 0;
-			cmd.trigger_tail_count = 0;
-			cmd.trigger_thresh = 0;
-			cmd.buffer_size = 1500;
-			ath6kl_wmi_pktlog_enable_cmd(globalwmi, &cmd);
-			}
-		} else if (eventtype == WIFI_DIAG_MAC_FSM_DISCONNECTED) {
-			ath6kl_wmi_macfilter_cmd(globalwmi, WMI_PKTLOG_EVENT_TX | WMI_PKTLOG_EVENT_RX, 
-						WIFI_DIAG_MACFILTER_DISABLEALL, WIFI_DIAG_MACFILTER_DISABLEALL);
-			ath6kl_wmi_pktlog_disable_cmd(globalwmi);
-			ath6kl_wmi_fsm_cmd(globalwmi, false);
-			ath6kl_wmi_pwrsave_cmd(globalwmi, false);
-			wifi_diag_timer_destroy();
-		}
-	}
-
-	if (diag_event_init) {
+	if (vif->diag.diag_event_init) {
 		skb_queue_tail(&diag_events, skb);
 		schedule_work(&wifi_diag_event_work);
 	}
 }
 
 void 
-wifi_diag_send_pwrsave_event(wifi_diag_pwrsave_t pwrsave)
+wifi_diag_send_pwrsave_event(struct ath6kl_vif *vif, wifi_diag_pwrsave_t pwrsave, u32 seq_num)
 {
 	wifi_diag_event_t *pwifi_diag_pwrsave_event;
 	wifi_diag_pwrsave_event_t *ppwrsave_event_data;
@@ -984,7 +927,7 @@ wifi_diag_send_pwrsave_event(wifi_diag_pwrsave_t pwrsave)
 	u32 size;
 
 	if (!diag_local_test) {
-		if(!(cfg_mask & WIFI_DIAG_PWR_SAVE_EVENTID) || diag_evt_callback == NULL)
+		if(!(vif->diag.cfg_mask & WIFI_DIAG_PWR_SAVE_EVENTID) || diag_evt_callback == NULL)
 		return;
 	}
 
@@ -995,74 +938,104 @@ wifi_diag_send_pwrsave_event(wifi_diag_pwrsave_t pwrsave)
 
 	pwifi_diag_pwrsave_event = (wifi_diag_event_t *) skb->data;
 	pwifi_diag_pwrsave_event->event_id = WIFI_DIAG_PWR_SAVE_EVENTID;
+	pwifi_diag_pwrsave_event->seq_num = seq_num;
 	pwifi_diag_pwrsave_event->len = sizeof(*ppwrsave_event_data);
 	ppwrsave_event_data = (wifi_diag_pwrsave_event_t *)pwifi_diag_pwrsave_event->event_data;
 	ppwrsave_event_data->pwrsave = pwrsave;
 
-	if (diag_event_init) {
+	if (vif->diag.diag_event_init) {
 		skb_queue_tail(&diag_events, skb);
 		schedule_work(&wifi_diag_event_work);
 	}
 }
 
-int
-wifi_diag_update_txrx_stats(struct ath6kl_vif *vif)
+int 
+ath6kl_wmi_stat_rx_rate_event(struct ath6kl_vif *vif, struct wmi *wmi, u8 *datap, int len, u32 seq_num)
 {
-	struct target_stats *stats = &vif->target_stats;
+	wifi_diag_event_t *pwifi_diag_rxstat_event;
+	wifi_diag_rx_stat_event_t *prx_stat_event_data;
+	struct sk_buff *skb;
+	u32 size, i;
+	u32 rx_rate_pkt[44];
 
-	tx_stat.tx_pkt = stats->tx_pkt;
-	tx_stat.tx_ucast_pkt = stats->tx_ucast_pkt;
-	tx_stat.tx_retry_cnt = stats->tx_retry_cnt;
-	tx_stat.tx_fail_cnt = stats->tx_fail_cnt;
-	rx_stat.rx_pkt = stats->rx_pkt;
-	rx_stat.rx_ucast_pkt = stats->rx_ucast_pkt;
-	rx_stat.rx_dupl_frame = stats->rx_dupl_frame;
+	printk("ath6kl_wmi_stat_rx_rate_event\n");
+	memcpy(&rx_rate_pkt[0], datap, sizeof(u32)*44);
+	
+	if (!diag_local_test) {
+		if(!(vif->diag.cfg_mask & WIFI_DIAG_RX_STAT_EVENTENABLE) || diag_evt_callback == NULL)
+			return -1;    
+	}
 
-	return true;
+	size = sizeof(*pwifi_diag_rxstat_event) + sizeof(*prx_stat_event_data);
+	skb = ath6kl_wmi_get_new_buf(size);
+	if (!skb)
+		return -1;
+
+	pwifi_diag_rxstat_event = (wifi_diag_event_t *) skb->data;
+	pwifi_diag_rxstat_event->event_id = WIFI_DIAG_RX_STAT_EVENTID;
+	pwifi_diag_rxstat_event->seq_num = seq_num;
+	pwifi_diag_rxstat_event->len = sizeof(*prx_stat_event_data);
+	prx_stat_event_data = (wifi_diag_rx_stat_event_t *)pwifi_diag_rxstat_event->event_data;
+	prx_stat_event_data->rx_pkt = vif->target_stats.rx_pkt;
+	prx_stat_event_data->rx_ucast_pkt = vif->target_stats.rx_ucast_pkt;
+	prx_stat_event_data->rx_dupl_frame = vif->target_stats.rx_dupl_frame;
+	for (i=0; i<44; i++) {
+		prx_stat_event_data->rx_rate_pkt[i] = rx_rate_pkt[i];
+	}
+
+	if (vif->diag.diag_event_init) {
+		skb_queue_tail(&diag_events, skb);
+		schedule_work(&wifi_diag_event_work);
+	}
+	
+	return 0;
 }
 
-void
-wifi_diag_tx_stat_timer_handler(unsigned long ptr)
+int 
+ath6kl_wmi_stat_tx_rate_event(struct ath6kl_vif *vif, struct wmi *wmi, u8 *datap, int len, u32 seq_num)
 {
-	struct wmi *wmi = (struct wmi *)ptr;
 	wifi_diag_event_t *pwifi_diag_txstat_event;
 	wifi_diag_tx_stat_event_t *ptx_stat_event_data;
 	struct sk_buff *skb;
 	u32 size, i;
+	u32 tx_rate_pkt[44];
 
-	ath6kl_wmi_get_stats_cmd(wmi, 0);
+	printk("ath6kl_wmi_stat_tx_rate_event\n");
+	memcpy(&tx_rate_pkt[0], datap, sizeof(u32)*44);
 
 	if (!diag_local_test) {
-		if(!(cfg_mask & WIFI_DIAG_TX_STAT_EVENTENABLE) || diag_evt_callback == NULL)
-			return;    
+		if(!(vif->diag.cfg_mask & WIFI_DIAG_TX_STAT_EVENTENABLE) || diag_evt_callback == NULL)
+			return -1;    
 	}
 
 	size = sizeof(*pwifi_diag_txstat_event) + sizeof(*ptx_stat_event_data);
 	skb = ath6kl_wmi_get_new_buf(size);
 	if (!skb)
-		return ;
+		return -1;
 
 	pwifi_diag_txstat_event = (wifi_diag_event_t *) skb->data;
 	pwifi_diag_txstat_event->event_id = WIFI_DIAG_TX_STAT_EVENTID;
+	pwifi_diag_txstat_event->seq_num = seq_num;
 	pwifi_diag_txstat_event->len = sizeof(*ptx_stat_event_data);
 	ptx_stat_event_data = (wifi_diag_tx_stat_event_t *)pwifi_diag_txstat_event->event_data;
-	ptx_stat_event_data->tx_pkt = tx_stat.tx_pkt;
-	ptx_stat_event_data->tx_ucast_pkt = tx_stat.tx_ucast_pkt;
-	ptx_stat_event_data->tx_retry_cnt = tx_stat.tx_retry_cnt;
-	ptx_stat_event_data->tx_fail_cnt = tx_stat.tx_fail_cnt;
+	ptx_stat_event_data->tx_pkt = vif->target_stats.tx_pkt;
+	ptx_stat_event_data->tx_ucast_pkt = vif->target_stats.tx_ucast_pkt;
+	ptx_stat_event_data->tx_retry_cnt = vif->target_stats.tx_retry_cnt;
+	ptx_stat_event_data->tx_fail_cnt = vif->target_stats.tx_fail_cnt;
 	for (i=0; i<44; i++) {
-		ptx_stat_event_data->tx_rate_pkt[i] = tx_stat.tx_rate_pkt[i];
+		ptx_stat_event_data->tx_rate_pkt[i] = tx_rate_pkt[i];
 	}
 
-	if (diag_event_init) {
+	if (vif->diag.diag_event_init) {
 		skb_queue_tail(&diag_events, skb);
 		schedule_work(&wifi_diag_event_work);
 	}
-	mod_timer(&tx_stat_timer, jiffies + msecs_to_jiffies(tx_timer_val));
+	
+	return 0;
 }
 
 int 
-ath6kl_wmi_interference_event(struct wmi *wmi, u8 *datap, int len)
+ath6kl_wmi_interference_event(struct ath6kl_vif *vif, struct wmi *wmi, u8 *datap, int len, u32 seq_num)
 {
 	wifi_diag_event_t *pwifi_diag_interference_event;
 	wifi_diag_interference_event_t *pinterference_event_data;
@@ -1072,7 +1045,7 @@ ath6kl_wmi_interference_event(struct wmi *wmi, u8 *datap, int len)
 	printk("ath6kl_wmi_interference_event\n");
 
 	if (!diag_local_test) {
-		if(!(cfg_mask & WIFI_DIAG_INTERFERENCE_EVENTENABLE) || diag_evt_callback == NULL)
+		if(!(vif->diag.cfg_mask & WIFI_DIAG_INTERFERENCE_EVENTENABLE) || diag_evt_callback == NULL)
 			return -1;    
 	}
 
@@ -1083,17 +1056,18 @@ ath6kl_wmi_interference_event(struct wmi *wmi, u8 *datap, int len)
 
 	pwifi_diag_interference_event = (wifi_diag_event_t *) skb->data;
 	pwifi_diag_interference_event->event_id = WIFI_DIAG_INTERFERENCE_EVENTID;
+	pwifi_diag_interference_event->seq_num = seq_num;
 	pwifi_diag_interference_event->len = sizeof(*pinterference_event_data);
 	pinterference_event_data = (wifi_diag_interference_event_t *)pwifi_diag_interference_event->event_data;
 
 	rx_clear_cnt = *((u32 *)datap);
-	if (rx_clear_cnt >= pre_rx_clear_cnt)	
-		pinterference_event_data->rx_clear_cnt = rx_clear_cnt - pre_rx_clear_cnt;
+	if (rx_clear_cnt >= vif->diag.pre_rx_clear_cnt)	
+		pinterference_event_data->rx_clear_cnt = rx_clear_cnt - vif->diag.pre_rx_clear_cnt;
 	else
-		pinterference_event_data->rx_clear_cnt = 0xFFFFFFFF - (pre_rx_clear_cnt - rx_clear_cnt);
-	pre_rx_clear_cnt = rx_clear_cnt;
+		pinterference_event_data->rx_clear_cnt = 0xFFFFFFFF - (vif->diag.pre_rx_clear_cnt - rx_clear_cnt);
+	vif->diag.pre_rx_clear_cnt = rx_clear_cnt;
 
-	if (diag_event_init) {
+	if (vif->diag.diag_event_init) {
 		skb_queue_tail(&diag_events, skb);
 		schedule_work(&wifi_diag_event_work);
 	}
@@ -1101,7 +1075,7 @@ ath6kl_wmi_interference_event(struct wmi *wmi, u8 *datap, int len)
 }
 
 int 
-ath6kl_wmi_rxtime_event(struct wmi *wmi, u8 *datap, int len)
+ath6kl_wmi_rxtime_event(struct ath6kl_vif *vif, struct wmi *wmi, u8 *datap, int len, u32 seq_num)
 {
 	wifi_diag_event_t *pwifi_diag_rxtime_event;
 	wifi_diag_rxtime_event_t *prxtime_event_data;
@@ -1111,7 +1085,7 @@ ath6kl_wmi_rxtime_event(struct wmi *wmi, u8 *datap, int len)
 	printk("ath6kl_wmi_rxtime_event\n");
  
 	if (!diag_local_test) {   
-		if(!(cfg_mask & WIFI_DIAG_RX_TIME_EVENTID) || diag_evt_callback == NULL)
+		if(!(vif->diag.cfg_mask & WIFI_DIAG_RX_TIME_EVENTID) || diag_evt_callback == NULL)
 			return -1;
 	}
 
@@ -1122,17 +1096,18 @@ ath6kl_wmi_rxtime_event(struct wmi *wmi, u8 *datap, int len)
 
 	pwifi_diag_rxtime_event = (wifi_diag_event_t *) skb->data;
 	pwifi_diag_rxtime_event->event_id = WIFI_DIAG_RX_TIME_EVENTID;
+	pwifi_diag_rxtime_event->seq_num = seq_num;
 	pwifi_diag_rxtime_event->len = sizeof(*prxtime_event_data);
 	prxtime_event_data = (wifi_diag_rxtime_event_t *)pwifi_diag_rxtime_event->event_data;
 
 	rx_frame_cnt = *((u32 *)datap);
-	if (rx_frame_cnt >= pre_rx_frame_cnt)	
-		prxtime_event_data->rx_frame_cnt = rx_frame_cnt - pre_rx_frame_cnt;
+	if (rx_frame_cnt >= vif->diag.pre_rx_frame_cnt)	
+		prxtime_event_data->rx_frame_cnt = rx_frame_cnt - vif->diag.pre_rx_frame_cnt;
 	else
-		prxtime_event_data->rx_frame_cnt = 0xFFFFFFFF - (pre_rx_frame_cnt - rx_frame_cnt);
-	pre_rx_frame_cnt = rx_frame_cnt;
+		prxtime_event_data->rx_frame_cnt = 0xFFFFFFFF - (vif->diag.pre_rx_frame_cnt - rx_frame_cnt);
+	vif->diag.pre_rx_frame_cnt = rx_frame_cnt;
 
-	if (diag_event_init) {
+	if (vif->diag.diag_event_init) {
 		skb_queue_tail(&diag_events, skb);
 		schedule_work(&wifi_diag_event_work);
 	}
@@ -1140,51 +1115,44 @@ ath6kl_wmi_rxtime_event(struct wmi *wmi, u8 *datap, int len)
 }
 
 void
+wifi_diag_tx_stat_timer_handler(unsigned long ptr)
+{
+	struct ath6kl_vif *vif = (struct ath6kl_vif *)ptr;
+	struct sk_buff *skb;
+
+	ath6kl_wmi_get_stats_cmd(globalwmi, 0);
+
+	skb = ath6kl_wmi_get_new_buf(sizeof(struct wmid_cmd_hdr));
+	if (skb)
+		ath6kl_wmi_cmd_send_diag(globalwmi, skb, WMID_STAT_TX_RATE_CMDID,
+					NO_SYNC_WMIFLAG);
+
+	mod_timer(&vif->diag.tx_stat_timer, jiffies + msecs_to_jiffies(vif->diag.tx_timer_val));
+}
+
+void
 wifi_diag_rx_stat_timer_handler(unsigned long ptr)
 {
-	struct wmi *wmi = (struct wmi *)ptr;
-	wifi_diag_event_t *pwifi_diag_rxstat_event;
-	wifi_diag_rx_stat_event_t *prx_stat_event_data;
+	struct ath6kl_vif *vif = (struct ath6kl_vif *)ptr;
 	struct sk_buff *skb;
-	u32 size, i;
 
-	ath6kl_wmi_get_stats_cmd(wmi, 0);
-    
-	if (!diag_local_test) {
-		if(!(cfg_mask & WIFI_DIAG_RX_STAT_EVENTENABLE) || diag_evt_callback == NULL)
-			return;    
-	}
+	ath6kl_wmi_get_stats_cmd(globalwmi, 0);
 
-	size = sizeof(*pwifi_diag_rxstat_event) + sizeof(*prx_stat_event_data);
-	skb = ath6kl_wmi_get_new_buf(size);
-	if (!skb)
-		return ;
+	skb = ath6kl_wmi_get_new_buf(sizeof(struct wmid_cmd_hdr));
+	if (skb)
+		ath6kl_wmi_cmd_send_diag(globalwmi, skb, WMID_STAT_RX_RATE_CMDID,
+					NO_SYNC_WMIFLAG);
 
-	pwifi_diag_rxstat_event = (wifi_diag_event_t *) skb->data;
-	pwifi_diag_rxstat_event->event_id = WIFI_DIAG_RX_STAT_EVENTID;
-	pwifi_diag_rxstat_event->len = sizeof(*prx_stat_event_data);
-	prx_stat_event_data = (wifi_diag_rx_stat_event_t *)pwifi_diag_rxstat_event->event_data;
-	prx_stat_event_data->rx_pkt = rx_stat.rx_pkt;
-	prx_stat_event_data->rx_ucast_pkt = rx_stat.rx_ucast_pkt;
-	prx_stat_event_data->rx_dupl_frame = rx_stat.rx_dupl_frame;
-	for (i=0; i<44; i++) {
-		prx_stat_event_data->rx_rate_pkt[i] = rx_stat.rx_rate_pkt[i];
-	}
-
-	if (diag_event_init) {
-		skb_queue_tail(&diag_events, skb);
-		schedule_work(&wifi_diag_event_work);
-	}
-	mod_timer(&rx_stat_timer, jiffies + msecs_to_jiffies(rx_timer_val));
+	mod_timer(&vif->diag.rx_stat_timer, jiffies + msecs_to_jiffies(vif->diag.rx_timer_val));
 }
 
 void
 wifi_diag_interference_timer_handler(unsigned long ptr)
 {
-	struct wmi *wmi = (struct wmi *)ptr;
+	struct ath6kl_vif *vif = (struct ath6kl_vif *)ptr;
 
-	ath6kl_wmi_interference_cmd(wmi);
-	mod_timer(&interference_timer, jiffies + msecs_to_jiffies(1000));
+	ath6kl_wmi_interference_cmd(globalwmi);
+	mod_timer(&vif->diag.interference_timer, jiffies + msecs_to_jiffies(1000));
 
 	return;
 }
@@ -1192,27 +1160,104 @@ wifi_diag_interference_timer_handler(unsigned long ptr)
 void
 wifi_diag_rxtime_timer_handler(unsigned long ptr)
 {
-	struct wmi *wmi = (struct wmi *)ptr;
+	struct ath6kl_vif *vif = (struct ath6kl_vif *)ptr;
 
-	ath6kl_wmi_rxtime_cmd(wmi);
-	mod_timer(&rxtime_timer, jiffies + msecs_to_jiffies(1000));
+	ath6kl_wmi_rxtime_cmd(globalwmi);
+	mod_timer(&vif->diag.rxtime_timer, jiffies + msecs_to_jiffies(1000));
 
 	return;
 }
 
 void
-wifi_diag_timer_destroy(void)
+wifi_diag_timer_destroy(struct ath6kl_vif *vif)
 {
-	del_timer(&tx_stat_timer);
-	del_timer(&rx_stat_timer);
-	del_timer(&interference_timer);
-	del_timer(&rxtime_timer);
-	if (diag_event_init) {
+	del_timer(&vif->diag.tx_stat_timer);
+	del_timer(&vif->diag.rx_stat_timer);
+	del_timer(&vif->diag.interference_timer);
+	del_timer(&vif->diag.rxtime_timer);
+
+	if (vif->diag.diag_event_init) {
 		skb_queue_purge(&diag_events);
-		diag_event_init = false;
+		vif->diag.diag_event_init = false;
 	}
 }
 
+void
+wifi_diag_init(void)
+{
+	struct ath6kl_vif *vif = ath6kl_get_vif_by_index(globalwmi->parent_dev, 0);
+
+	if (vif == NULL)
+		return;
+	
+	skb_queue_head_init(&diag_events);
+	vif->diag.diag_event_init = true;
+	
+	if (diag_local_test & WIFI_DIAG_MAC_FSM_EVENTENABLE)
+		ath6kl_wmi_fsm_cmd(globalwmi, true);
+
+	if (diag_local_test & WIFI_DIAG_PWR_SAVE_EVENTENABLE)
+		ath6kl_wmi_pwrsave_cmd(globalwmi, true);
+
+	if (diag_local_test & WIFI_DIAG_INTERFERENCE_EVENTENABLE) {
+		del_timer(&vif->diag.interference_timer);
+		init_timer(&vif->diag.interference_timer);
+		setup_timer(&vif->diag.interference_timer, wifi_diag_interference_timer_handler, (unsigned long) vif);
+		mod_timer(&vif->diag.interference_timer, jiffies + msecs_to_jiffies(1000));                    
+	}
+	
+	if (diag_local_test & WIFI_DIAG_RX_TIME_EVENTENABLE) {
+		del_timer(&vif->diag.rxtime_timer);
+		init_timer(&vif->diag.rxtime_timer);
+		setup_timer(&vif->diag.rxtime_timer, wifi_diag_rxtime_timer_handler, (unsigned long) vif);
+		mod_timer(&vif->diag.rxtime_timer, jiffies + msecs_to_jiffies(1000));
+	}
+
+	if (diag_local_test & WIFI_DIAG_TX_STAT_EVENTENABLE) {
+		del_timer(&vif->diag.tx_stat_timer);
+		init_timer(&vif->diag.tx_stat_timer);
+		setup_timer(&vif->diag.tx_stat_timer, wifi_diag_tx_stat_timer_handler, (unsigned long) vif);
+		vif->diag.tx_timer_val = 2000;
+		mod_timer(&vif->diag.tx_stat_timer, jiffies + msecs_to_jiffies(vif->diag.tx_timer_val));
+	}
+
+	if (diag_local_test & WIFI_DIAG_RX_STAT_EVENTENABLE) {
+		del_timer(&vif->diag.rx_stat_timer);
+		init_timer(&vif->diag.rx_stat_timer);
+		setup_timer(&vif->diag.rx_stat_timer, wifi_diag_rx_stat_timer_handler, (unsigned long) vif);
+		vif->diag.rx_timer_val = 2000;    
+		mod_timer(&vif->diag.rx_stat_timer, jiffies + msecs_to_jiffies(vif->diag.rx_timer_val));
+	}
+
+	if ((diag_local_test & WIFI_DIAG_MAC_TX_FRAME_EVENTENABLE) ||
+	    (diag_local_test & WIFI_DIAG_MAC_RX_FRAME_EVENTENABLE)) {
+		if ((diag_local_test & 0x00000200) &&
+		    (diag_local_test & 0xFFFF0000)) {
+			ath6kl_wmi_macfilter_cmd(globalwmi, WMI_PKTLOG_EVENT_TX | WMI_PKTLOG_EVENT_RX, 
+						((diag_local_test & 0xFFFF0000)>>16) & WIFI_DIAG_MACFILTER_LOW_MASK, 
+						WIFI_DIAG_MACFILTER_DISABLEALL & WIFI_DIAG_MACFILTER_HIGH_MASK);
+		} else if ((diag_local_test & 0x00000800) &&
+			   (diag_local_test & 0xFFFF0000)) {
+			ath6kl_wmi_macfilter_cmd(globalwmi, WMI_PKTLOG_EVENT_TX | WMI_PKTLOG_EVENT_RX, 
+						WIFI_DIAG_MACFILTER_DISABLEALL & WIFI_DIAG_MACFILTER_LOW_MASK, 
+						((diag_local_test & 0xFFFF0000)>>16) & WIFI_DIAG_MACFILTER_HIGH_MASK);
+		} else {
+			ath6kl_wmi_macfilter_cmd(globalwmi, WMI_PKTLOG_EVENT_TX | WMI_PKTLOG_EVENT_RX, 
+						WIFI_DIAG_MACFILTER_ENABLEALL & WIFI_DIAG_MACFILTER_LOW_MASK, 
+						WIFI_DIAG_MACFILTER_ENABLEALL & WIFI_DIAG_MACFILTER_HIGH_MASK);
+		}
+		{
+		struct wmi_enable_pktlog_cmd cmd;
+		cmd.option = WMI_PKTLOG_OPTION_LOG_DIAGNOSTIC;
+		cmd.evlist = WMI_PKTLOG_EVENT_TX | WMI_PKTLOG_EVENT_RX;
+		cmd.trigger_interval = 0;
+		cmd.trigger_tail_count = 0;
+		cmd.trigger_thresh = 0;
+		cmd.buffer_size = 1500;
+		ath6kl_wmi_pktlog_enable_cmd(globalwmi, &cmd);
+		}
+	}
+}
 
 EXPORT_SYMBOL(wifi_diag_drv_register);
 

@@ -19,11 +19,17 @@
 
 #define ATH6KL_HTCOEX_SCAN_PERIOD			(30 * 1000)	/* in ms */
 
+#define ATH6KL_HTCOEX_RATE_ROLLBACK			(10) /* in scan cycle */
+
 #define ATH6KL_HTCOEX_FLAGS_ENABLED			BIT(0)		/* htcoex enable/disable */
 #define ATH6KL_HTCOEX_FLAGS_START			BIT(1)		/* htcoex start/stop */
 
+#define ATH6KL_HTCOEX_RATEMASK_FULL 			(0x00000fffffffffffULL) /* 1x1/2x2 solution only */
+#define ATH6KL_HTCOEX_RATEMASK_HT20			(0x000000000fffffffULL)
+#define ATH6KL_HTCOEX_RATEMASK_HT40			(0x00000fffffffffffULL)
+
 struct htcoex_coex_info {
-	u32	intolerant40;
+	u32 intolerant40;
 	int num_chans;
 	u8 chans[14];
 };
@@ -40,8 +46,12 @@ struct htcoex_bss_info {
 struct htcoex {
 	struct ath6kl_vif *vif;
 	u32 flags;
-	u32 scan_interval;						/* in ms, 0 means htcoex disable. */
+	u32 scan_interval;				/* in ms, 0 means htcoex disable. */
 	u32 num_scan;
+
+	u8 rate_rollback_interval;			/* in scan cycle, 0 means no roll-back. */
+	u64 current_ratemask;
+	u32 tolerant40_cnt;
 
 	struct timer_list scan_timer;
 	struct cfg80211_scan_request request;
@@ -69,7 +79,7 @@ struct ieee80211_action_public {
 } __attribute__((packed));
 				
 /* 20/40 BSS Coexistence IE */
-#define IEEE80211_COEX_IE_INFO_REQ			(1 << 0)
+#define IEEE80211_COEX_IE_INFO_REQ		(1 << 0)
 #define IEEE80211_COEX_IE_40_INTOLERANT		(1 << 1)
 #define IEEE80211_COEX_IE_20_WIDTH_REQ		(1 << 2)
 #define IEEE80211_COEX_IE_OBSS_SCAN_REQ		(1 << 3)
@@ -94,11 +104,11 @@ struct ieee80211_intolerant_chan_report_ie {
 struct htcoex *ath6kl_htcoex_init(struct ath6kl_vif *vif);
 void ath6kl_htcoex_deinit(struct ath6kl_vif *vif);
 void ath6kl_htcoex_bss_info(struct ath6kl_vif *vif, 
-							struct ieee80211_mgmt *mgmt, 
-							int len,
-							struct ieee80211_channel *channel);
+			    struct ieee80211_mgmt *mgmt, 
+			    int len,
+			    struct ieee80211_channel *channel);
 int ath6kl_htcoex_scan_complete_event(struct ath6kl_vif *vif, bool aborted);
 void ath6kl_htcoex_connect_event(struct ath6kl_vif *vif);
 void ath6kl_htcoex_disconnect_event(struct ath6kl_vif *vif);
-int ath6kl_htcoex_config(struct ath6kl_vif *vif, u32 interval);
+int ath6kl_htcoex_config(struct ath6kl_vif *vif, u32 interval, u8 rate_rollback);
 #endif

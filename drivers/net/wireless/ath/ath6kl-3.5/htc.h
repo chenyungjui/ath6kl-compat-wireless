@@ -328,6 +328,8 @@ struct htc_packet {
 	 * a network buffer
 	 */
 	struct sk_buff *skb;
+        u8 connid;
+        u8 recycle_count;
 };
 
 enum htc_send_full_action {

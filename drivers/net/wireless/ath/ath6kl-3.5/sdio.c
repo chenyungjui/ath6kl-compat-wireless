@@ -15,6 +15,8 @@
  */
 
 #include <linux/module.h>
+#include <linux/gpio.h>
+#include <linux/interrupt.h>
 #include <linux/mmc/card.h>
 #include <linux/mmc/mmc.h>
 #include <linux/mmc/host.h>
@@ -27,6 +29,14 @@
 #include "target.h"
 #include "debug.h"
 #include "cfg80211.h"
+
+/* 
+ * Define GPIO number for WoW in your platform other than zero 
+ * Wake lock will be called when GPIO asserted. 
+ */
+#ifdef CONFIG_ANDROID
+#define PLAT_WOW_GPIO_PIN                  26
+#endif
 
 struct ath6kl_sdio {
 	struct sdio_func *func;
@@ -511,6 +521,7 @@ static int ath6kl_sdio_power_off(struct ath6kl *ar)
 {
 	struct ath6kl_sdio *ar_sdio = ath6kl_sdio_priv(ar);
 	int ret;
+	int num;
 
 	if (ar_sdio->is_disabled)
 		return 0;
@@ -519,6 +530,12 @@ static int ath6kl_sdio_power_off(struct ath6kl *ar)
 
 	/* Disable the card */
 	sdio_claim_host(ar_sdio->func);
+
+	num = ar_sdio->func->num;
+	ar_sdio->func->num = 0;
+	sdio_writeb(ar_sdio->func, 0x05, 0xf0, &ret);
+        ar_sdio->func->num = num;
+
 	ret = sdio_disable_func(ar_sdio->func);
 	sdio_release_host(ar_sdio->func);
 
@@ -1155,6 +1172,18 @@ static int ath6kl_sdio_stat(struct ath6kl *ar, u8 *buf, int buf_len)
 	return 0;
 }
 
+#ifdef CONFIG_HAS_EARLYSUSPEND
+static void ath6kl_sdio_early_suspend(struct ath6kl *ar)
+{
+	/* TBD */
+}
+
+static void ath6kl_sdio_late_resume(struct ath6kl *ar)
+{
+	/* TBD */
+}
+#endif
+
 static const struct ath6kl_hif_ops ath6kl_sdio_ops = {
 	.read_write_sync = ath6kl_sdio_read_write_sync,
 	.write_async = ath6kl_sdio_write_async,
@@ -1177,6 +1206,11 @@ static const struct ath6kl_hif_ops ath6kl_sdio_ops = {
 	.power_off = ath6kl_sdio_power_off,
 	.stop = ath6kl_sdio_stop,
 	.get_stat = ath6kl_sdio_stat,
+#ifdef CONFIG_HAS_EARLYSUSPEND	
+	.early_suspend = ath6kl_sdio_early_suspend,
+	.late_resume = ath6kl_sdio_late_resume,
+#endif
+	
 };
 
 #if defined(CONFIG_PM_SLEEP) && (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,34))
@@ -1265,6 +1299,10 @@ static int ath6kl_sdio_probe(struct sdio_func *func,
 	ar->hif_priv = ar_sdio;
 	ar->hif_ops = &ath6kl_sdio_ops;
 	ar->bmi.max_data_size = 256;
+#ifdef CONFIG_ANDROID
+	if (PLAT_WOW_GPIO_PIN)
+		ar->wow_irq = gpio_to_irq(PLAT_WOW_GPIO_PIN);
+#endif
 
 	ath6kl_sdio_set_mbox_info(ar);
 
@@ -1336,6 +1374,9 @@ static int __init ath6kl_sdio_init(void)
 {
 	int ret;
 
+#ifdef CONFIG_ANDROID
+	ath6kl_sdio_init_msm();
+#endif
 	ret = sdio_register_driver(&ath6kl_sdio_driver);
 	if (ret)
 		ath6kl_err("sdio driver registration failed: %d\n", ret);
@@ -1346,6 +1387,9 @@ static int __init ath6kl_sdio_init(void)
 static void __exit ath6kl_sdio_exit(void)
 {
 	sdio_unregister_driver(&ath6kl_sdio_driver);
+#ifdef CONFIG_ANDROID
+	ath6kl_sdio_exit_msm();
+#endif
 }
 
 module_init(ath6kl_sdio_init);
@@ -1354,7 +1398,7 @@ module_exit(ath6kl_sdio_exit);
 MODULE_AUTHOR("Atheros Communications, Inc.");
 MODULE_DESCRIPTION("Driver support for Atheros AR600x SDIO devices");
 MODULE_LICENSE("Dual BSD/GPL");
-
+MODULE_VERSION(DRV_VERSION);
 MODULE_FIRMWARE(AR6003_HW_2_0_FW_DIR "/" AR6003_HW_2_0_OTP_FILE);
 MODULE_FIRMWARE(AR6003_HW_2_0_FW_DIR "/" AR6003_HW_2_0_FIRMWARE_FILE);
 MODULE_FIRMWARE(AR6003_HW_2_0_FW_DIR "/" AR6003_HW_2_0_PATCH_FILE);
@@ -1374,6 +1418,9 @@ MODULE_FIRMWARE(AR6004_HW_1_1_DEFAULT_BOARD_DATA_FILE);
 MODULE_FIRMWARE(AR6004_HW_1_2_FW_DIR "/" AR6004_HW_1_2_FIRMWARE_FILE);
 MODULE_FIRMWARE(AR6004_HW_1_2_BOARD_DATA_FILE);
 MODULE_FIRMWARE(AR6004_HW_1_2_DEFAULT_BOARD_DATA_FILE);
+MODULE_FIRMWARE(AR6004_HW_1_3_FW_DIR "/" AR6004_HW_1_3_FIRMWARE_FILE);
+MODULE_FIRMWARE(AR6004_HW_1_3_BOARD_DATA_FILE);
+MODULE_FIRMWARE(AR6004_HW_1_3_DEFAULT_BOARD_DATA_FILE);
 MODULE_FIRMWARE(AR6004_HW_1_6_FW_DIR "/" AR6004_HW_1_6_FIRMWARE_FILE);
 MODULE_FIRMWARE(AR6004_HW_1_6_BOARD_DATA_FILE);
 MODULE_FIRMWARE(AR6004_HW_1_6_DEFAULT_BOARD_DATA_FILE);

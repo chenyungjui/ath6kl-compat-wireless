@@ -38,6 +38,9 @@ typedef  struct _RTTM_CONTEXT
    u8  burst;
    u32 burstsize;
    u32 nCirResp;
+   u32 ts1;
+   u32 ts2;
+   struct ath6kl *ar;
 }S_RTTM_CONTEXT;
 
 extern S_RTTM_CONTEXT *g_pRttmContext;

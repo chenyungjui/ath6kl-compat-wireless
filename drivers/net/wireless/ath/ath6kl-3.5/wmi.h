@@ -657,6 +657,13 @@ enum wmi_cmd_id {
 	WMI_CCX_FRAME_REPORT_CMDID, /* CCXv4 */
 	WMI_CCX_HOST_FEATURE_CONFIG_CMDID,
 	WMI_DIAGNOSTIC_CMDID,	/* diagnostic */
+        WMI_SET_FILTERED_PROMISCUOUS_MODE_CMDID,
+
+        /*added btcoex command*/
+        WMI_SET_BTCOEX_HID_CONFIG_CMDID,
+        WMI_RTT_CONFIG_CMDID,
+        WMI_STA_BMISS_ENHANCE_CMDID,
+
 };
 
 enum wmi_mgmt_frame_type {
@@ -1411,10 +1418,12 @@ struct wmi_connect_event {
 	union {
 		struct {
 			__le16 ch;
-			u8 bssid[ETH_ALEN];
-			__le16 listen_intvl;
-			__le16 beacon_intvl;
-			__le32 nw_type;
+                        u8 bssid[ETH_ALEN];
+                        __le16 listen_intvl;
+                        __le16 beacon_intvl;
+                        __le16 nw_type;
+                        u8     tx_scheduler_enabled; /* 0x5A means enabled */
+                        u8     aid;
 		} sta;
 		struct {
 			u8 phymode;
@@ -1429,7 +1438,9 @@ struct wmi_connect_event {
 		struct {
 			__le16 ch;
 			u8 bssid[ETH_ALEN];
-			u8 unused[8];
+                        u8 tx_scheduler_enabled; /* 0x5A means enabled */
+                        u8 aid;
+                        u8 unused[6];
 		} ap_bss;
 	} u;
 	u8 beacon_ie_len;
@@ -2027,6 +2038,9 @@ struct wmi_pmkid_list_reply {
 	struct wmi_pmkid pmkid_list[1];
 } __packed;
 
+#define WMI_MAX_PMKID_CACHE   8
+#define MAX_PMKID_LIST_SIZE   sizeof(__le32) + WMI_MAX_PMKID_CACHE * (sizeof(struct wmi_pmkid) + ETH_ALEN)
+
 /* WMI_ADDBA_REQ_EVENTID */
 struct wmi_addba_req_event {
 	u8 tid;
@@ -2114,6 +2128,9 @@ struct wmi_tx_complete_event {
  */
 #define AP_MAX_NUM_STA          10
 
+#define NUM_DEV                 4
+#define NUM_CONN                (AP_MAX_NUM_STA + NUM_DEV - 1) /* As P2P device port won't enter CONN state, so we omit 1 CONN buffer */
+
 /* Spl. AID used to set DTIM flag in the beacons */
 #define MCAST_AID               0xFF
 
@@ -2180,7 +2197,9 @@ struct wmi_per_sta_stat {
 	__le32 rx_pkts;
 	__le32 rx_error;
 	__le32 rx_discard;
-	__le32 aid;
+	u8 aid;
+	u8 tx_ucast_rate;
+	u8 reserved[2];
 } __packed;
 
 struct wmi_ap_mode_stat {
@@ -2253,7 +2272,7 @@ struct wmi_p2p_rx_probe_req_event {
 
 #define P2P_FLAG_CAPABILITIES_REQ   (0x00000001)
 #define P2P_FLAG_MACADDR_REQ        (0x00000002)
-#define P2P_FLAG_HMODEL_REQ         (0x00000002)
+#define P2P_FLAG_HMODEL_REQ         (0x00000004)
 
 struct wmi_get_p2p_info {
 	__le32 info_req_flags;
@@ -2408,6 +2427,7 @@ struct ath6kl_wmix_dbglog_cfg_module_cmd {
  */
 struct wmid_cmd_hdr {
 	__le32 cmd_id;
+	__le32 seq_num;
 } __packed;
 
 struct wmid_event_set_cmd {
@@ -2426,6 +2446,8 @@ enum wmid_command_id {
 	WMID_FSM_EVENT_CMDID,
 	WMID_PWR_SAVE_EVENT_CMDID,
 	WMID_MACFILTER_CMDID,
+	WMID_STAT_RX_RATE_CMDID,
+	WMID_STAT_TX_RATE_CMDID,
 };
 
 enum wmid_event_id {
@@ -2439,6 +2461,8 @@ enum wmid_event_id {
 	WMID_INTERFERENCE_EVENTID,
 	WMID_RXTIME_EVENTID,
 	WMID_PWR_SAVE_EVENTID,
+	WMID_FSM_CONNECT_EVENTID,
+	WMID_FSM_DISCONNECT_EVENTID,
 };
 
 struct wmid_pwr_save_event {
@@ -2469,6 +2493,13 @@ struct wmi_green_tx_params {
     u8     maxBackOff;
     u8     minGtxRssi;
     u8     forceBackOff;
+} __packed;
+
+/* flow control indication parameters */
+struct wmi_flowctrl_ind_event {
+    u8     num_of_conn;
+    u8     ac_map[NUM_CONN];
+    u8     ac_queue_depth[NUM_CONN*2];
 } __packed;
 
 /* SMPS parameters */
@@ -2530,6 +2561,16 @@ struct wmi_set_ht_cap {
 	u8 max_ampdu_len_exp;
 } __packed;
 
+/* beacon interval */
+struct wmi_set_beacon_intvl {
+	u16 beacon_interval;
+} __packed;
+
+/* hidden ssid */
+struct wmi_set_hidden_ssid {
+	u8 hidden_ssid;
+} __packed;
+
 /* DTIM */
 struct wmi_set_dtim_cmd {
 	u8 dtim;
@@ -2586,7 +2627,37 @@ struct  wmi_gtk_offload_status_event {
 #define WMI_MAX_RATE_MASK         2
 
 struct wmi_set_tx_select_rate_cmd {
-    __le32 rateMasks[WMI_MODE_MAX * WMI_MAX_RATE_MASK];
+	__le32 rateMasks[WMI_MODE_MAX * WMI_MAX_RATE_MASK];
+}__packed;
+
+struct wmi_rsn_cap_cmd {
+	__le16   rsn_cap;
+}__packed;
+
+#define WMI_MAX_RATE_MASK         2
+
+struct wmi_set_fix_rates_cmd {
+	__le32 fixRateMask[WMI_MAX_RATE_MASK];
+}__packed;
+
+/* NOA Info. */
+struct wmi_noa_descriptor {
+	__le32 duration;
+	__le32 interval;
+	__le32 start_or_offset;
+	u8 count_or_type;
+}__packed;
+
+struct wmi_noa_info {
+	u8 enable;
+	u8 count;
+	u8 noas[0];		/* struct wmi_noa_descriptor */
+}__packed;
+
+/* OppPS Info. */
+struct wmi_oppps_info {
+	u8 enable;
+	u8 ctwin;
 }__packed;
 
 enum htc_endpoint_id ath6kl_wmi_get_control_ep(struct wmi *wmi);
@@ -2758,6 +2829,7 @@ void ath6kl_wmi_shutdown(struct wmi *wmi);
 void ath6kl_wmi_reset(struct wmi *wmi);
 
 int wmi_rtt_req_meas(struct wmi *wmip,struct nsp_mrqst *pstmrqst);
+int wmi_rtt_config(struct wmi *wmip,struct nsp_rtt_config *);
 
 int ath6kl_wmi_set_green_tx_params(struct wmi *wmi,
 				struct wmi_green_tx_params *params);
@@ -2781,14 +2853,12 @@ int ath6kl_wmi_simple_cmd(struct wmi *wmi, u8 if_idx, enum wmi_cmd_id cmd_id);
 
 inline struct sk_buff *ath6kl_wmi_get_new_buf(u32 size);
 
-int ath6kl_wmi_diag_event(struct wmi *wmi, struct sk_buff *skb);
-
 int ath6kl_wmi_abort_scan_cmd(struct wmi *wmi, u8 if_idx);
 
 int ath6kl_wmi_set_ht_cap_cmd(struct wmi *wmi,
 	u8 band, u8 chan_width_40M_supported, u8 short_GI);
 
-int ath6kl_wmi_set_dtim_cmd(struct wmi *wmi, u8 if_idx, u8 dtim);
+int ath6kl_wmi_set_dtim_cmd(struct wmi *wmi, u8 if_idx, u32 dtim);
 
 int ath6kl_wmi_ap_set_apsd(struct wmi *wmi, u8 if_idx, u8 enable);
 
@@ -2796,4 +2866,14 @@ int ath6kl_wmi_set_apsd_buffered_traffic_cmd(struct wmi *wmi, u8 if_idx,
 						u16 aid, u16 bitmap, u32 flags);
 
 int ath6kl_wmi_set_tx_select_rates_on_all_mode(struct wmi *wmi, u8 if_idx, u64 mask);
+
+int ath6kl_wmi_set_hidden_ssid_cmd(struct wmi *wmi, u8 if_idx, u8 hidden_ssid);
+
+int ath6kl_wmi_set_beacon_interval_cmd(struct wmi *wmi, u8 if_idx, u32 beacon_interval);
+
+int ath6kl_wmi_set_rsn_cap(struct wmi *wmi, u8 if_idx, u16 rsn_cap);
+int ath6kl_wmi_get_rsn_cap(struct wmi *wmi, u8 if_idx);
+int ath6kl_wmi_get_pmkid_list(struct wmi *wmi, u8 if_idx);
+
+int ath6kl_wmi_set_fix_rates(struct wmi *wmi, u8 if_idx, u64 mask);
 #endif /* WMI_H */

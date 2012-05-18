@@ -298,6 +298,7 @@ static int htc_issue_packets(struct htc_target *target,
 
             /* Endianess? */
             put_unaligned((u16) payload_len, &htc_hdr->payld_len);
+            htc_hdr->payld_len = cpu_to_le16(htc_hdr->payld_len);
             htc_hdr->flags = packet->info.tx.flags;
             htc_hdr->eid = (u8) packet->endpoint;
             htc_hdr->ctrl[0] = 0;
@@ -345,6 +346,7 @@ static int htc_issue_packets(struct htc_target *target,
 
 		/* Endianess? */
 		put_unaligned((u16) payload_len, &htc_hdr->payld_len);
+		htc_hdr->payld_len = cpu_to_le16(htc_hdr->payld_len);
 		htc_hdr->flags = packet->info.tx.flags;
 		htc_hdr->eid = (u8) packet->endpoint;
 		htc_hdr->ctrl[0] = 0;
@@ -1404,7 +1406,6 @@ static int htc_rx_completion(struct htc_target *context,
 	if (netlen < (payload_len + HTC_HDR_LENGTH)) {
 		spin_lock_bh(&target->rx_lock);
 		target->rx_sg_in_progress = true;
-		skb_queue_head_init(&target->rx_sg_q);
 		skb_queue_tail(&target->rx_sg_q, netbuf);
 		target->rx_sg_total_len_exp = (payload_len + HTC_HDR_LENGTH);
 		target->rx_sg_total_len_cur += netlen;
@@ -1755,7 +1756,7 @@ static int ath6kl_htc_pipe_conn_service(struct htc_target *handle,
 		ath6kl_dbg(ATH6KL_DBG_TRC,
 			   "%s: service 0x%X conn resp: "
 			   "status: %d ep: %d\n", __func__,
-			   resp_msg->svc_id, resp_msg->status,
+			   le16_to_cpu(resp_msg->svc_id), resp_msg->status,
 			   resp_msg->eid);
 
 		conn_resp->resp_code = resp_msg->status;
@@ -1764,7 +1765,7 @@ static int ath6kl_htc_pipe_conn_service(struct htc_target *handle,
 			ath6kl_dbg(ATH6KL_DBG_HTC,
 				   " Target failed service 0x%X connect"
 				   " request (status:%d)\n",
-				   resp_msg->svc_id, resp_msg->status);
+				   le16_to_cpu(resp_msg->svc_id), resp_msg->status);
 			status = -EINVAL;
 			goto free_packet;
 		}
@@ -1861,6 +1862,8 @@ void *ath6kl_htc_pipe_create(struct ath6kl *ar)
 	spin_lock_init(&target->rx_lock);
 	spin_lock_init(&target->tx_lock);
 
+	skb_queue_head_init(&target->rx_sg_q);
+		
 	reset_endpoint_states(target);
 
 	for (i = 0; i < HTC_PACKET_CONTAINER_ALLOCATION; i++) {
@@ -1948,7 +1951,7 @@ static int ath6kl_htc_pipe_start(struct htc_target *handle)
 		ath6kl_dbg(ATH6KL_DBG_HTC,
 			   "HTC will not use TX credit flow control\n");
 		setup_comp->flags |=
-			cpu_to_le32(HTC_SETUP_COMP_FLG_DISABLE_TX_CREDIT_FLOW);
+			HTC_SETUP_COMP_FLG_DISABLE_TX_CREDIT_FLOW;
 	} else {
 		ath6kl_dbg(ATH6KL_DBG_HTC,
 			   "HTC using TX credit flow control\n");
@@ -1963,6 +1966,8 @@ static int ath6kl_htc_pipe_start(struct htc_target *handle)
         ath6kl_dbg(ATH6KL_DBG_HTC,
                 "HTC will not use bundle recv\n");
     }
+    
+    setup_comp->flags =  cpu_to_le32(setup_comp->flags);
     
 	set_htc_pkt_info(packet, NULL, (u8 *) setup_comp,
 			 sizeof(struct htc_setup_comp_ext_msg),
@@ -1988,13 +1993,14 @@ static void ath6kl_htc_pipe_stop(struct htc_target *handle)
 	}
 
 	spin_lock_bh(&target->rx_lock);
+
 	while ((skb = skb_dequeue(rx_sg_queue))) {
 		dev_kfree_skb(skb);
 	}
 	target->rx_sg_total_len_exp = 0;
 	target->rx_sg_total_len_cur = 0;
 	target->rx_sg_in_progress = false;
-
+	
 	spin_unlock_bh(&target->rx_lock);
 
 	reset_endpoint_states(target);
@@ -2055,14 +2061,14 @@ static int ath6kl_htc_pipe_wait_target(struct htc_target *handle)
 	if (ready_msg->ver2_0_info.msg_id != cpu_to_le16(HTC_MSG_READY_ID)) {
 		ath6kl_dbg(ATH6KL_DBG_HTC,
 			   "invalid htc ready msg : 0x%X !\n",
-			   ready_msg->ver2_0_info.msg_id);
+			   le16_to_cpu(ready_msg->ver2_0_info.msg_id));
 		return -ECOMM;
 	}
 
 	ath6kl_dbg(ATH6KL_DBG_HTC,
 		   "Target Ready! : transmit resources : %d size:%d\n",
-		   ready_msg->ver2_0_info.cred_cnt,
-		   ready_msg->ver2_0_info.cred_sz);
+		   le16_to_cpu(ready_msg->ver2_0_info.cred_cnt),
+		   le16_to_cpu(ready_msg->ver2_0_info.cred_sz));
 
 	target->tgt_creds =
 		le16_to_cpu(ready_msg->ver2_0_info.cred_cnt);

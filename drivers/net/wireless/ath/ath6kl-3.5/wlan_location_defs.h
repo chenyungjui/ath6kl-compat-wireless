@@ -181,7 +181,9 @@ struct nsp_cir_resp {
 
     u8  isht40;
 
-    u32 reserved;
+    s8  fwcorr;
+
+    u8 reserved[3];
 
 };
 
@@ -189,11 +191,12 @@ struct rttresp_meas_debug
 {
      u32 rtt;
      int rtt_cal;
-     u8 corr;
+     s8 corr;
      u8 rssi0;
      u8 rssi1;
      u8 reserved;
      u32 range;
+     int clkoffset;
 };
 struct nsp_rttresp_debuginfo
 {
@@ -281,7 +284,8 @@ enum NSP_FRAME_TYPE {
     NSP_WRQST,
     NSP_WRESP,
     NSP_SLRQST,
-    NSP_SLRESP
+    NSP_SLRESP,
+    NSP_RTTCONFIG,
 };
 
 

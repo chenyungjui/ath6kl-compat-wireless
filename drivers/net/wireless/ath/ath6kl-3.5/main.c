@@ -20,9 +20,26 @@
 #include "cfg80211.h"
 #include "target.h"
 #include "debug.h"
-#ifdef ATH6KL_DIAGNOSTIC 
-#include "diagnose.h"
-#endif
+
+static int _string_to_mac(char *string, int len, u8 *macaddr)
+{
+	int i, k;
+	char temp[3] = {0};
+
+	/* assume string is "00:11:22:33:44:55". */
+	if ( !string && (len < 17) ){
+		return -1;
+	}
+
+	i = k = 0;
+	while (i < len){
+		memcpy(temp, string + i, 2);
+		macaddr[k++] = (u8)simple_strtoul(temp, NULL, 16);
+		i += 3;
+	}
+
+	return 0;
+}
 
 struct ath6kl_sta *ath6kl_find_sta(struct ath6kl_vif *vif, u8 *node_addr)
 {
@@ -722,11 +739,13 @@ void disconnect_timer_handler(unsigned long ptr)
 	ath6kl_disconnect(vif);
 }
 
-void ath6kl_disconnect(struct ath6kl_vif *vif)
+int ath6kl_disconnect(struct ath6kl_vif *vif)
 {
+	int ret = 0;
+	
 	if (test_bit(CONNECTED, &vif->flags) ||
 	    test_bit(CONNECT_PEND, &vif->flags)) {
-		ath6kl_wmi_disconnect_cmd(vif->ar->wmi, vif->fw_vif_idx);
+		ret = ath6kl_wmi_disconnect_cmd(vif->ar->wmi, vif->fw_vif_idx);
 		/*
 		 * Disconnect command is issued, clear the connect pending
 		 * flag. The connected flag will be cleared in
@@ -734,6 +753,8 @@ void ath6kl_disconnect(struct ath6kl_vif *vif)
 		 */
 		clear_bit(CONNECT_PEND, &vif->flags);
 	}
+
+	return ret;
 }
 
 /* WMI Event handlers */
@@ -800,10 +821,13 @@ void ath6kl_connect_event(struct ath6kl_vif *vif, u16 channel, u8 *bssid,
 	memcpy(vif->bssid, bssid, sizeof(vif->bssid));
 	vif->bss_ch = channel;
 
-	if ((vif->nw_type == INFRA_NETWORK))
+	if ((vif->nw_type == INFRA_NETWORK)) {
+		ath6kl_wmi_disctimeout_cmd(ar->wmi, vif->fw_vif_idx,
+		   	 		   ATH6KL_DISCONNECT_TIMEOUT);
 		ath6kl_wmi_listeninterval_cmd(ar->wmi, vif->fw_vif_idx,
 					      ar->listen_intvl_t,
 					      ar->listen_intvl_b);
+	}
 
 	netif_wake_queue(vif->ndev);
 
@@ -967,10 +991,6 @@ static void ath6kl_update_target_stats(struct ath6kl_vif *vif, u8 *ptr, u32 len)
 	stats->wow_evt_discarded +=
 		le16_to_cpu(tgt_stats->wow_stats.wow_evt_discarded);
 
-	if (test_bit(STATS_UPDATE_PEND, &vif->flags)) {
-		clear_bit(STATS_UPDATE_PEND, &vif->flags);
-		wake_up(&ar->event_wq);
-	}
 }
 
 static void ath6kl_add_le32(__le32 *var, __le32 val)
@@ -986,29 +1006,31 @@ void ath6kl_tgt_stats_event(struct ath6kl_vif *vif, u8 *ptr, u32 len)
 	u8 ac;
 
 	if (vif->nw_type == AP_NETWORK) {
-		if (len < sizeof(*p))
-			return;
+		if ((len + 4) >= sizeof(*p)) {
+			for (ac = 0; ac < AP_MAX_NUM_STA; ac++) {
+				st_ap = &ap->sta[ac];
+				st_p = &p->sta[ac];
 
-		for (ac = 0; ac < AP_MAX_NUM_STA; ac++) {
-			st_ap = &ap->sta[ac];
-			st_p = &p->sta[ac];
-
-			ath6kl_add_le32(&st_ap->tx_bytes, st_p->tx_bytes);
-			ath6kl_add_le32(&st_ap->tx_pkts, st_p->tx_pkts);
-			ath6kl_add_le32(&st_ap->tx_error, st_p->tx_error);
-			ath6kl_add_le32(&st_ap->tx_discard, st_p->tx_discard);
-			ath6kl_add_le32(&st_ap->rx_bytes, st_p->rx_bytes);
-			ath6kl_add_le32(&st_ap->rx_pkts, st_p->rx_pkts);
-			ath6kl_add_le32(&st_ap->rx_error, st_p->rx_error);
-			ath6kl_add_le32(&st_ap->rx_discard, st_p->rx_discard);
+				ath6kl_add_le32(&st_ap->tx_bytes, st_p->tx_bytes);
+				ath6kl_add_le32(&st_ap->tx_pkts, st_p->tx_pkts);
+				ath6kl_add_le32(&st_ap->tx_error, st_p->tx_error);
+				ath6kl_add_le32(&st_ap->tx_discard, st_p->tx_discard);
+				ath6kl_add_le32(&st_ap->rx_bytes, st_p->rx_bytes);
+				ath6kl_add_le32(&st_ap->rx_pkts, st_p->rx_pkts);
+				ath6kl_add_le32(&st_ap->rx_error, st_p->rx_error);
+				ath6kl_add_le32(&st_ap->rx_discard, st_p->rx_discard);
+				st_ap->aid = st_p->aid;
+				st_ap->tx_ucast_rate = st_p->tx_ucast_rate;
+			}
 		}
-
 	} else {
 		ath6kl_update_target_stats(vif, ptr, len);
 	}
-#ifdef ATH6KL_DIAGNOSTIC
-	wifi_diag_update_txrx_stats(vif);
-#endif
+
+	if (test_bit(STATS_UPDATE_PEND, &vif->flags)) {
+		clear_bit(STATS_UPDATE_PEND, &vif->flags);
+		wake_up(&vif->ar->event_wq);
+	}
 }
 
 void ath6kl_wakeup_event(void *dev)
@@ -1170,8 +1192,16 @@ void ath6kl_disconnect_event(struct ath6kl_vif *vif, u8 reason, u8 *bssid,
 			clear_bit(CONNECTED, &vif->flags);
 		}
 		return;
-	}
+	} else if (vif->nw_type == INFRA_NETWORK) {
+		ath6kl_wmi_disctimeout_cmd(ar->wmi, vif->fw_vif_idx,
+		   	 		   ATH6KL_DISCONNECT_TIMEOUT);
 
+		/* Support to triger supplicant to have another try. */
+		if (!is_valid_ether_addr(bssid) &&
+		    is_valid_ether_addr(vif->req_bssid))
+			bssid = vif->req_bssid;
+	}
+	
 	ath6kl_cfg80211_disconnect_event(vif, reason, bssid,
 				       assoc_resp_len, assoc_info,
 				       prot_reason_status);
@@ -1296,20 +1326,63 @@ static int ath6kl_ioctl_standard(struct net_device *dev, struct ifreq *rq, int c
 
 	switch(cmd) {
 	case ATH6KL_IOCTL_STANDARD01:
-		/* 
-		 * FIXME : not yet support Android's PNO commands.
-		 *         PNOSETUP & PNOFORCE command.
-		 */
-		ret = 0;
-		break;
+	{	/* FIXME : not yet support all Android private commands. */
+		struct ath6kl_android_wifi_priv_cmd android_cmd;
+		char *user_cmd, *pos;
+		u8 pwr_mode;
 
+		if(copy_from_user(&android_cmd, data, sizeof(struct ath6kl_android_wifi_priv_cmd)))
+			ret = -EIO;
+		else {
+			user_cmd = kzalloc(android_cmd.total_len, GFP_KERNEL);
+			if (!user_cmd) {
+				ret = -ENOMEM;
+				break;
+			}
+
+			if(copy_from_user(user_cmd, android_cmd.buf, android_cmd.used_len)) 
+				ret = -EIO;
+			else {
+				if ((pos = strstr(user_cmd, "P2P_SET_PS ")) != NULL) {
+					/* P2P_SET_PS {legacy_ps} {opp_ps} {ctwindow} */
+					if (android_cmd.used_len > 12) {
+						if (down_interruptible(&vif->ar->sem)) {
+							ath6kl_err("busy, couldn't get access\n");
+							ret = -EIO;
+							break;
+						}
+
+						ret = 0;
+						/* FIXME : better parsing... */
+						pwr_mode = (pos[11] != '0' ? 
+								REC_POWER : MAX_PERF_POWER);
+						if (ath6kl_wmi_powermode_cmd(vif->ar->wmi, 
+									     vif->fw_vif_idx,
+									     pwr_mode))
+							ret = -EIO;
+
+						up(&vif->ar->sem);
+					} else
+						ret = -EFAULT;
+				} else {
+					ath6kl_err("%s : not yet support \"%s\"\n", 
+									__func__, 
+									user_cmd);
+					ret = -EOPNOTSUPP;
+				}
+			}
+
+			kfree(user_cmd);
+		}
+		break;
+	}
 	case ATH6KL_IOCTL_STANDARD02:
 	{
 		struct ath6kl_ioctl_cmd ioctl_cmd;
 
-	    if(copy_from_user(&ioctl_cmd, data, sizeof(struct ath6kl_ioctl_cmd)))
+		if(copy_from_user(&ioctl_cmd, data, sizeof(struct ath6kl_ioctl_cmd)))
 			ret = -EIO;
-	    else {
+		else {
 			switch(ioctl_cmd.subcmd){
 			case ATH6KL_IOCTL_AP_APSD:
 				ath6kl_wmi_ap_set_apsd(vif->ar->wmi, vif->fw_vif_idx, ioctl_cmd.options);
@@ -1321,7 +1394,7 @@ static int ath6kl_ioctl_standard(struct net_device *dev, struct ifreq *rq, int c
 				ret = -EOPNOTSUPP;
 				break;
 			}
-	    }
+		}
 		break;
 	}
 	default:
@@ -1330,6 +1403,79 @@ static int ath6kl_ioctl_standard(struct net_device *dev, struct ifreq *rq, int c
 	}
 	
 	return ret;
+}
+
+static int ath6kl_ioctl_linkspeed(struct net_device *dev, struct ifreq *rq, int cmd)
+{
+	struct ath6kl *ar = ath6kl_priv(dev);
+	struct ath6kl_vif *vif = netdev_priv(dev);
+	struct iwreq *req = (struct iwreq *)(rq);
+	char user_cmd[32];
+	u8 macaddr[6];
+	long left;
+	s32 rate = 0;
+
+	/* FIXME : only AR6004 now */
+	if (ar->target_type != TARGET_TYPE_AR6004)
+		return -EOPNOTSUPP;
+
+	if ((!req->u.data.pointer) || (!req->u.data.length))
+		return -EFAULT;
+
+	memset(user_cmd, 0, 32);
+	if (copy_from_user(user_cmd, req->u.data.pointer, req->u.data.length))
+		return -EFAULT;
+
+	if (_string_to_mac(user_cmd, req->u.data.length, macaddr))
+		return -EFAULT;
+
+	if (down_interruptible(&ar->sem))
+		return -EBUSY;
+
+	set_bit(STATS_UPDATE_PEND, &vif->flags);
+
+	if (ath6kl_wmi_get_stats_cmd(ar->wmi, vif->fw_vif_idx) != 0) {
+		up(&ar->sem);
+		return -EIO;
+	}
+
+	left = wait_event_interruptible_timeout(ar->event_wq,
+						!test_bit(STATS_UPDATE_PEND,
+							  &vif->flags),
+						WMI_TIMEOUT);
+
+	up(&ar->sem);
+
+	if (left == 0)
+		return -ETIMEDOUT;
+	else if (left < 0)
+		return left;
+
+	memset(user_cmd, 0, 32);
+	if (vif->nw_type == AP_NETWORK) {
+		struct wmi_ap_mode_stat *ap = &vif->ap_stats;
+		struct ath6kl_sta *conn;
+
+		conn = ath6kl_find_sta(vif, macaddr);
+		if (conn){	
+			for (left = 0; left < AP_MAX_NUM_STA; left++) {
+				if (conn->aid == ap->sta[left].aid) {
+					rate = ath6kl_wmi_get_rate_ar6004(ap->sta[left].tx_ucast_rate);
+					break;
+				}
+			}
+
+			WARN_ON(left == AP_MAX_NUM_STA);
+		}
+	} else
+		rate = vif->target_stats.tx_ucast_rate;
+
+	snprintf(user_cmd, 32, "%u", rate / 1000);
+	req->u.data.length = strlen(user_cmd);
+	user_cmd[req->u.data.length] = '\0';
+
+	return (copy_to_user(req->u.data.pointer, user_cmd, req->u.data.length + 1) 
+			? -EFAULT : 0);
 }
 
 int ath6kl_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
@@ -1354,7 +1500,7 @@ int ath6kl_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
 	case ATH6KL_IOCTL_STANDARD15: 	/* hole, please reserved */
 		ret = ath6kl_ioctl_standard(dev, rq, cmd);
 		break;
-	case ATH6KL_IOCTL_EXTENDED:	/* endpoint loopback purpose */
+	case ATH6KL_IOCTL_WEXT_PRIV26:	/* endpoint loopback purpose */
 		get_user(cmd, (int *)rq->ifr_data);
 		userdata = (char *)(((unsigned int *)rq->ifr_data)+1);
 
@@ -1372,6 +1518,10 @@ int ath6kl_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
 			}
 			break;
 		}
+		break;
+	case ATH6KL_IOCTL_WEXT_PRIV27:	/* QCSAP (old) */
+	case ATH6KL_IOCTL_WEXT_PRIV31:	/* QCSAP */
+		ret = ath6kl_ioctl_linkspeed(dev, rq, cmd);
 		break;
 	default:
 		ret = -EOPNOTSUPP;

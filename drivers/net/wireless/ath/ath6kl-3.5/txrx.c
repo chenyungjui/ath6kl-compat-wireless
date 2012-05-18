@@ -390,6 +390,156 @@ fail_ctrl_tx:
 	return status;
 }
 
+int ath6kl_conn_list_init(struct ath6kl *ar)
+{
+        int i;
+        struct ath6kl_conn_list *pcon;
+
+        for (i=0; i<NUM_CONN; i++) {
+                pcon = &ar->conn_list[i];
+                INIT_LIST_HEAD(&pcon->conn_queue);
+                INIT_LIST_HEAD(&pcon->re_queue);
+                pcon->connect_status = 0;
+                pcon->previous_can_send = true;
+        }
+        return 0;
+}
+
+void ath6kl_conn_list_cleanup(struct ath6kl *ar)
+{
+        int i;
+        struct ath6kl_conn_list *pcon;
+        struct htc_packet *packet, *tmp_pkt;
+        struct list_head container;
+
+        INIT_LIST_HEAD(&container);
+
+        for (i=0; i<NUM_CONN; i++) {
+                pcon = &ar->conn_list[i];
+
+                spin_lock_bh(&ar->lock);
+      
+                if (!list_empty(&pcon->re_queue)) {
+                        list_for_each_entry_safe(packet, tmp_pkt, &pcon->re_queue, list) {
+                                list_del(&packet->list);
+                                packet->status = 0;
+                                list_add_tail(&packet->list, &container);
+                        }
+                }
+                
+                if (!list_empty(&pcon->conn_queue)) {
+                        list_for_each_entry_safe(packet, tmp_pkt, &pcon->conn_queue, list) {
+                                list_del(&packet->list);
+                                packet->status = 0;
+                                list_add_tail(&packet->list, &container);
+                        }
+                }
+
+                spin_unlock_bh(&ar->lock);
+        }
+
+        ath6kl_tx_complete(ar->htc_target, &container);
+}
+
+static bool ath6kl_check_can_send(struct ath6kl *ar, u8 connid)
+{
+        bool can_send = false;
+        struct ath6kl_conn_list *pcon = &ar->conn_list[connid];
+
+        do
+        {
+                if (pcon->ocs)
+                {
+                        break;
+                }
+                can_send = true;
+        }while(false);
+        return can_send;
+}
+
+void ath6kl_flowctrl_change(struct ath6kl_vif *vif)
+{
+        struct ath6kl *ar = vif->ar;
+        struct htc_packet *packet, *tmp_pkt;
+        int i, eid;
+        struct ath6kl_conn_list *pcon;
+        struct htc_endpoint *endpoint;
+        struct list_head    *tx_queue, container;
+        
+        INIT_LIST_HEAD(&container);
+
+        for (i=0; i<NUM_CONN; i++) {
+                pcon = &ar->conn_list[i];
+                if (!ath6kl_check_can_send(ar, i) && pcon->previous_can_send) {
+                
+                        spin_lock_bh(&ar->htc_target->tx_lock);
+                
+                        for (eid=ENDPOINT_2; eid<=ENDPOINT_5; eid++) {
+                                endpoint = &ar->htc_target->endpoint[eid];
+                                tx_queue = &endpoint->txq;
+                                if (list_empty(tx_queue)) continue;
+                    
+                                list_for_each_entry_safe(packet, tmp_pkt, tx_queue, list) {
+                                        if (packet->connid != i) continue;
+                                        list_del(&packet->list);
+
+                                        if (packet->recycle_count > 10) {
+                                                printk("recycle packet exceeded limitation\n");
+                                                packet->status = 0;
+                                                list_add_tail(&packet->list, &container);
+                                        }
+                                        else {
+                                                packet->recycle_count++;
+                                                list_add_tail(&packet->list, &pcon->re_queue);
+                                        }
+                                }
+                        }
+
+                        spin_unlock_bh(&ar->htc_target->tx_lock);
+                }
+                pcon->previous_can_send = ath6kl_check_can_send(ar, i);
+        }
+
+        ath6kl_tx_complete(ar->htc_target, &container);
+}
+
+void ath6kl_tx_scheduler(struct ath6kl_vif *vif)
+{
+        struct ath6kl *ar = vif->ar;
+        struct htc_packet *packet, *tmp_pkt;
+        int i;
+        struct ath6kl_conn_list *pcon;
+
+        for (i=0; i<NUM_CONN; i++) {
+                pcon = &ar->conn_list[i];
+
+                spin_lock_bh(&ar->lock);            
+
+                if (ath6kl_check_can_send(ar, i)) { 
+                        if (!list_empty(&pcon->re_queue)) {
+                                list_for_each_entry_safe(packet, tmp_pkt, &pcon->re_queue, list) {
+                                        list_del(&packet->list);
+                                        if (packet == NULL) continue;
+                                        if (packet->endpoint >= ENDPOINT_MAX) continue;
+
+                                        ath6kl_htc_tx(ar->htc_target, packet);
+                                }
+                        }
+
+                        if (!list_empty(&pcon->conn_queue)) {
+                                list_for_each_entry_safe(packet, tmp_pkt, &pcon->conn_queue, list) {
+                                        list_del(&packet->list);
+                                        if (packet == NULL) continue;
+                                        if (packet->endpoint >= ENDPOINT_MAX) continue;
+
+                                        ath6kl_htc_tx(ar->htc_target, packet);
+                                }
+                        }
+                }
+                spin_unlock_bh(&ar->lock);
+        }
+}
+
 int ath6kl_data_tx(struct sk_buff *skb, struct net_device *dev)
 {
 	struct ath6kl *ar = ath6kl_priv(dev);
@@ -402,11 +552,12 @@ int ath6kl_data_tx(struct sk_buff *skb, struct net_device *dev)
 	bool chk_adhoc_ps_mapping = false;
 	u32 wmi_data_flags = 0;
 	int ret, aggr_tx_status = AGGR_TX_UNKNOW;
+        struct ath6kl_conn_list *pcon;
 
 	ath6kl_dbg(ATH6KL_DBG_WLAN_TX,
 		   "%s: skb=0x%p, data=0x%p, len=0x%x\n", __func__,
 		   skb, skb->data, skb->len);
-
+        
 	/* If target is not associated */
 	if (!test_bit(CONNECTED, &vif->flags) && 
 	    !test_bit(TESTMODE_EPPING, &ar->flag)) {
@@ -565,9 +716,32 @@ int ath6kl_data_tx(struct sk_buff *skb, struct net_device *dev)
 	set_htc_pkt_info(&cookie->htc_pkt, cookie, skb->data, skb->len,
 			 eid, htc_tag);
 	cookie->htc_pkt.skb = skb;
+        cookie->htc_pkt.connid = vif->connid;
+        cookie->htc_pkt.recycle_count = 0;
 
 	ath6kl_dbg_dump(ATH6KL_DBG_RAW_BYTES, __func__, "tx ",
 			skb->data, skb->len);
+
+        spin_lock_bh(&ar->lock);
+        
+        pcon = &ar->conn_list[vif->connid];
+        if (!ath6kl_check_can_send(ar, vif->connid)) {
+            list_add_tail(&cookie->htc_pkt.list, &pcon->conn_queue);
+            
+            spin_unlock_bh(&ar->lock);
+        
+            return 0;
+        }
+        else if (!list_empty(&pcon->conn_queue)) {
+            list_add_tail(&cookie->htc_pkt.list, &pcon->conn_queue);
+            
+            spin_unlock_bh(&ar->lock);
+            
+            ath6kl_tx_scheduler(vif);
+            return 0;
+        }
+
+        spin_unlock_bh(&ar->lock);
 
 	/*
 	 * HTC interface is asynchronous, if this fails, cleanup will
@@ -925,6 +1099,8 @@ void ath6kl_tx_data_cleanup(struct ath6kl *ar)
 	for (i = 0; i < WMM_NUM_AC; i++)
 		ath6kl_htc_flush_txep(ar->htc_target, ar->ac2ep_map[i],
 				      ATH6KL_DATA_PKT_TAG);
+
+        ath6kl_conn_list_cleanup(ar);
 }
 
 /* Rx functions */
@@ -1591,6 +1767,7 @@ void ath6kl_rx(struct htc_target *target, struct htc_packet *packet)
 		break;
 	case WMI_META_VERSION_2:
 		meta = (struct wmi_rx_meta_v2 *) skb->data;
+		meta->csum = le16_to_cpu(meta->csum);
 		if (meta->csum_flags & 0x1) {
 			skb->ip_summed = CHECKSUM_COMPLETE;
 			skb->csum = (__force __wsum) meta->csum;
@@ -1869,6 +2046,7 @@ static int aggr_tx(struct ath6kl_vif *vif, struct sk_buff **skb)
 
 					/* Change to A-MSDU type */
 					wmi_hdr->info2 |= (WMI_DATA_HDR_AMSDU_MASK << WMI_DATA_HDR_AMSDU_SHIFT);
+					wmi_hdr->info2 = cpu_to_le16(wmi_hdr->info2);
 
 					/* Clone meta-data & WMI-header. */
 					memcpy(amsdu_skb->data - hdr_len, (*skb)->data, hdr_len);

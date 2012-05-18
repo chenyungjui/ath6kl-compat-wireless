@@ -277,6 +277,11 @@ struct ath6kl_hif_ops {
 		struct sk_buff **msg_bundle, int num_msgs);
 	u16 (*pipe_get_max_queue_number)(struct ath6kl *ar, u8 pipe);
 	int (*pipe_set_max_sche)(struct ath6kl *ar, u32 max_sche_tx, u32 max_sche_rx);
+#ifdef CONFIG_HAS_EARLYSUSPEND	
+	void (*early_suspend)(struct ath6kl *ar);
+	void (*late_resume)(struct ath6kl *ar);
+#endif
+
 };
 
 int ath6kl_hif_setup(struct ath6kl_device *dev);

@@ -224,9 +224,11 @@ static void ath6kl_credit_seek(struct ath6kl_htc_credit_info *cred_info,
 
 	if (ep_dist->svc_id == WMI_CONTROL_SVC)
 		goto out;
-
-	if ((ep_dist->svc_id == WMI_DATA_VI_SVC) ||
-	    (ep_dist->svc_id == WMI_DATA_VO_SVC))
+	/*
+	 * For WMM test case 5.2.27 step8 on 1x1 solution, it has two streams VI and VO
+	 * If VO don't seek credit from VI, VO throughput can't pass the criterion
+	 */
+	if (ep_dist->svc_id == WMI_DATA_VI_SVC)
 		if ((ep_dist->cred_assngd >= ep_dist->cred_norm))
 			goto out;
 
@@ -364,6 +366,7 @@ static void ath6kl_htc_tx_prep_pkt(struct htc_packet *packet, u8 flags,
 
 	/* Endianess? */
 	put_unaligned((u16)packet->act_len, &hdr->payld_len);
+	hdr->payld_len = cpu_to_le16(hdr->payld_len);
 	hdr->flags = flags;
 	hdr->eid = packet->endpoint;
 	hdr->ctrl[0] = ctrl0;
@@ -1047,7 +1050,7 @@ static int htc_setup_tx_complete(struct htc_target *target)
 			setup_comp_ext->msg_per_rxbndl =
 						target->msg_per_bndl_max;
 		}
-
+		flags = cpu_to_le32(flags);
 		memcpy(&setup_comp_ext->flags, &flags,
 		       sizeof(setup_comp_ext->flags));
 		set_htc_pkt_info(send_pkt, NULL, (u8 *) setup_comp_ext,
@@ -1482,7 +1485,7 @@ static int ath6kl_htc_rx_alloc(struct htc_target *target,
 
 		if (le16_to_cpu(htc_hdr->payld_len) > HTC_MAX_PAYLOAD_LENGTH) {
 			ath6kl_err("payload len %d exceeds max htc : %d !\n",
-				   htc_hdr->payld_len,
+				   le16_to_cpu(htc_hdr->payld_len),
 				   (u32) HTC_MAX_PAYLOAD_LENGTH);
 			status = -ENOMEM;
 			break;
@@ -2454,7 +2457,7 @@ static int ath6kl_htc_mbox_conn_service(struct htc_target *target,
 		/* check response status */
 		if (resp_msg->status != HTC_SERVICE_SUCCESS) {
 			ath6kl_err("target failed service 0x%X connect request (status:%d)\n",
-				   resp_msg->svc_id, resp_msg->status);
+				   le16_to_cpu(resp_msg->svc_id), resp_msg->status);
 			status = -ENOMEM;
 			goto fail_tx;
 		}
@@ -2498,6 +2501,9 @@ static int ath6kl_htc_mbox_conn_service(struct htc_target *target,
 		break;
 	case WMI_DATA_BE_SVC:
 		endpoint->tx_drop_packet_threshold = MAX_DEF_COOKIE_NUM / 4;
+		break;
+	case WMI_DATA_VI_SVC:
+		endpoint->tx_drop_packet_threshold = MAX_DEF_COOKIE_NUM / 6;
 		break;
 	default:
 		endpoint->tx_drop_packet_threshold = MAX_HI_COOKIE_NUM;

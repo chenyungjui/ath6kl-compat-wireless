@@ -38,7 +38,10 @@ ath6kl_sdio-$(CONFIG_NL80211_TESTMODE) += testmode.o
 ath6kl_sdio-y += rttm.o
 ath6kl_sdio-y += diag.o
 ath6kl_sdio-y += htcoex.o
+ath6kl_sdio-y += ath_netlink.o
 ath6kl_sdio-$(CONFIG_QC_INTERNAL) += intra_reg.o
+ath6kl_sdio-y += pm.o
+ath6kl_sdio-y += p2p.o
 
 obj-$(CONFIG_ATH6KL_USB) += ath6kl_usb.o
 ath6kl_usb-y += debug.o
@@ -56,9 +59,13 @@ ath6kl_usb-$(CONFIG_NL80211_TESTMODE) += testmode.o
 ath6kl_usb-y += rttm.o
 ath6kl_usb-y += diag.o
 ath6kl_usb-y += htcoex.o
+ath6kl_usb-y += ath_netlink.o
 ath6kl_usb-$(CONFIG_QC_INTERNAL) += intra_reg.o
+ath6kl_usb-y += pm.o
+ath6kl_usb-y += p2p.o
 
 ccflags-$(CONFIG_QC_INTERNAL) += -DCONFIG_QC_INTERNAL
 ccflags-$(CONFIG_FPGA) += -DCONFIG_FPGA
 ccflags-y += -D__CHECK_ENDIAN__
+ccflags-y += -DCONFIG_BTCOEX_OLCA_3_5
 

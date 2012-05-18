@@ -88,6 +88,8 @@ static const struct ath6kl_diag_reg_info diag_reg[] = {
 	{ 0x540000, 0x540000 + (256 * 1024), "RAM" },
 	{ 0x29800, 0x2B210, "Base Band" },
 	{ 0x1C000, 0x1C748, "Analog" },
+	{ 0x5000, 0x5160, "WLAN RTC" },
+	{ 0x18000, 0x18170, "GPIO" },
 };
 
 void ath6kl_dump_registers(struct ath6kl_device *dev,
@@ -118,10 +120,10 @@ void ath6kl_dump_registers(struct ath6kl_device *dev,
 			irq_proc_reg->rx_lkahd_valid);
 		ath6kl_dbg(ATH6KL_DBG_ANY,
 			   "Rx Lookahead 0:            0x%x\n",
-			irq_proc_reg->rx_lkahd[0]);
+			le32_to_cpu(irq_proc_reg->rx_lkahd[0]));
 		ath6kl_dbg(ATH6KL_DBG_ANY,
 			   "Rx Lookahead 1:            0x%x\n",
-			irq_proc_reg->rx_lkahd[1]);
+			le32_to_cpu(irq_proc_reg->rx_lkahd[1]));
 
 		if (dev->ar->mbox_info.gmbox_addr != 0) {
 			/*
@@ -136,10 +138,10 @@ void ath6kl_dump_registers(struct ath6kl_device *dev,
 				irq_proc_reg->gmbox_rx_avail);
 			ath6kl_dbg(ATH6KL_DBG_ANY,
 				"GMBOX lookahead alias 0:   0x%x\n",
-				irq_proc_reg->rx_gmbox_lkahd_alias[0]);
+				le32_to_cpu(irq_proc_reg->rx_gmbox_lkahd_alias[0]));
 			ath6kl_dbg(ATH6KL_DBG_ANY,
 				"GMBOX lookahead alias 1:   0x%x\n",
-				irq_proc_reg->rx_gmbox_lkahd_alias[1]);
+				le32_to_cpu(irq_proc_reg->rx_gmbox_lkahd_alias[1]));
 		}
 
 	}
@@ -202,7 +204,7 @@ void dump_cred_dist_stats(struct htc_target *target)
 
 static int ath6kl_debugfs_open(struct inode *inode, struct file *file)
 {
-	file->private_data = inode->i_private;
+         file->private_data = inode->i_private;
 	return 0;
 }
 
@@ -565,6 +567,9 @@ static ssize_t read_file_credit_dist_stats(struct file *file,
 	char *buf;
 	unsigned int buf_len, len = 0;
 	ssize_t ret_cnt;
+
+	if ( WARN_ON(&target->cred_dist_list) )
+		return -EFAULT;
 
 	buf_len = CREDIT_INFO_DISPLAY_STRING_LEN +
 		  get_queue_depth(&target->cred_dist_list) * CREDIT_INFO_LEN;
@@ -1130,6 +1135,29 @@ static const struct file_operations fops_force_roam = {
 	.llseek = default_llseek,
 };
 
+static ssize_t ath6kl_roam_mode_read(struct file *file, 
+            char __user *user_buf, size_t count, loff_t *ppos)
+{
+    struct ath6kl *ar = file->private_data;
+    u8 buf[32];
+    unsigned int len = 0;
+    char *str;
+
+    if (ar->debug.roam_mode == WMI_DEFAULT_ROAM_MODE)
+        str = "default";
+    else if (ar->debug.roam_mode == WMI_HOST_BIAS_ROAM_MODE)
+        str = "bssbias";
+    else if (ar->debug.roam_mode == WMI_LOCK_BSS_MODE)
+        str = "lock";
+    else
+        str = "NONE";
+
+    len = scnprintf(buf, sizeof(buf), "roam mode: %s\n",
+                str);
+                            
+    return simple_read_from_buffer(user_buf, count, ppos, buf, len);
+}
+
 static ssize_t ath6kl_roam_mode_write(struct file *file,
 				      const char __user *user_buf,
 				      size_t count, loff_t *ppos)
@@ -1156,6 +1184,8 @@ static ssize_t ath6kl_roam_mode_write(struct file *file,
 	else
 		return -EINVAL;
 
+    ar->debug.roam_mode = mode;
+
 	ret = ath6kl_wmi_set_roam_mode_cmd(ar->wmi, mode);
 	if (ret)
 		return ret;
@@ -1164,6 +1194,7 @@ static ssize_t ath6kl_roam_mode_write(struct file *file,
 }
 
 static const struct file_operations fops_roam_mode = {
+    .read = ath6kl_roam_mode_read,
 	.write = ath6kl_roam_mode_write,
 	.open = ath6kl_debugfs_open,
 	.owner = THIS_MODULE,
@@ -1484,6 +1515,19 @@ static const struct file_operations fops_delete_qos = {
 	.llseek = default_llseek,
 };
 
+static ssize_t ath6kl_bgscan_int_read(struct file *file,
+        char __user *user_buf, size_t count, loff_t *ppos)
+{
+    struct ath6kl *ar = file->private_data;
+    u8 buf[128];
+    unsigned int len = 0;
+
+    len = scnprintf(buf, sizeof(buf), "bgscan interval: %d\n",
+            ar->debug.bgscan_int);
+
+    return simple_read_from_buffer(user_buf, count, ppos, buf, len);
+}
+
 static ssize_t ath6kl_bgscan_int_write(struct file *file,
 				const char __user *user_buf,
 				size_t count, loff_t *ppos)
@@ -1504,6 +1548,8 @@ static ssize_t ath6kl_bgscan_int_write(struct file *file,
 	if (bgscan_int == 0)
 		bgscan_int = 0xffff;
 
+    ar->debug.bgscan_int = bgscan_int;
+
 	ath6kl_wmi_scanparams_cmd(ar->wmi, 0, 0, 0, bgscan_int, 0, 0, 0, 3,
 				  0, 0, 0);
 
@@ -1511,6 +1557,7 @@ static ssize_t ath6kl_bgscan_int_write(struct file *file,
 }
 
 static const struct file_operations fops_bgscan_int = {
+	.read = ath6kl_bgscan_int_read,
 	.write = ath6kl_bgscan_int_write,
 	.open = ath6kl_debugfs_open,
 	.owner = THIS_MODULE,
@@ -1628,13 +1675,39 @@ static ssize_t ath6kl_power_params_write(struct file *file,
 	if (kstrtou16(token, 0, &num_tx))
 		return -EINVAL;
 
+	ar->debug.power_params.idle_period = idle_period;
+	ar->debug.power_params.ps_poll_num = ps_poll_num;
+	ar->debug.power_params.dtim = dtim;
+	ar->debug.power_params.tx_wakeup = tx_wakeup;
+	ar->debug.power_params.num_tx = num_tx;
+
 	ath6kl_wmi_pmparams_cmd(ar->wmi, 0, idle_period, ps_poll_num,
 				dtim, tx_wakeup, num_tx, 0);
 
 	return count;
 }
 
+static ssize_t ath6kl_power_params_read(struct file *file, 
+                      char __user *user_buf,
+                                            size_t count, loff_t *ppos)
+{
+	struct ath6kl *ar = file->private_data;
+	u8 buf[256];
+	unsigned int len = 0;
+	                
+	len = scnprintf(buf, sizeof(buf),
+			"idle_period: %d, ps_poll_num: %d, dtim: %d, tx_wakeup:%d , num_tx: %d\n",
+			ar->debug.power_params.idle_period,
+			ar->debug.power_params.ps_poll_num,
+			ar->debug.power_params.dtim,
+			ar->debug.power_params.tx_wakeup,
+			ar->debug.power_params.num_tx);
+
+	return simple_read_from_buffer(user_buf, count, ppos, buf, len);
+}
+
 static const struct file_operations fops_power_params = {
+	.read = ath6kl_power_params_read,
 	.write = ath6kl_power_params_write,
 	.open = ath6kl_debugfs_open,
 	.owner = THIS_MODULE,
@@ -1647,12 +1720,28 @@ static ssize_t ath6kl_rtt_write(struct file *file,
 {
 	struct ath6kl *ar = file->private_data;
 	struct nsp_mrqst stmrqst;
+	struct nsp_rtt_config strttcfg;
+        u8 ftype = ((struct nsp_header *)user_buf)->frame_type;
 
-	if (copy_from_user(&stmrqst, user_buf, sizeof(struct nsp_mrqst)))
+        //printk("RTT Request FrameType : %d\n",ftype);
+
+        if(ftype == NSP_MRQST)
+        {
+	 if (copy_from_user(&stmrqst, user_buf+sizeof(struct nsp_header), sizeof(struct nsp_mrqst)))
 		return -EFAULT;
 
-	if (wmi_rtt_req_meas(ar->wmi,&stmrqst))
+	 if (wmi_rtt_req_meas(ar->wmi,&stmrqst))
 		return -EIO;
+        }
+        else if(ftype == NSP_RTTCONFIG)
+        {
+	 if (copy_from_user(&strttcfg, user_buf+sizeof(struct nsp_header), sizeof(struct nsp_rtt_config)))
+		return -EFAULT;
+
+	 if (wmi_rtt_config(ar->wmi,&strttcfg))
+		return -EIO;
+
+        }
 
 	return 0;
 }
@@ -2171,7 +2260,8 @@ static ssize_t ath6kl_ht_coex_params_write(struct file *file,
 {
 	struct ath6kl *ar = file->private_data;
 	struct ath6kl_vif *vif;
-	u32 scan_interval;
+	char *p;
+	int scan_interval, rate_interval;
 	char buf[32];
 	ssize_t len;
 	int i;
@@ -2180,14 +2270,23 @@ static ssize_t ath6kl_ht_coex_params_write(struct file *file,
 	if (copy_from_user(buf, user_buf, len))
 		return -EFAULT;
 
-	buf[len] = '\0';
-	if (kstrtou32(buf, 0, &scan_interval))
-		return -EINVAL;
+	p = buf;
+	
+	SKIP_SPACE;
 
+	sscanf(p, "%d", &scan_interval);
+
+	SEEK_SPACE;
+	SKIP_SPACE;
+
+	sscanf(p, "%d", &rate_interval);
+	
 	for (i = 0; i < ar->vif_max; i++) {
 		vif = ath6kl_get_vif_by_index(ar, i);
 		if (vif)
-			ath6kl_htcoex_config(vif, scan_interval);
+			ath6kl_htcoex_config(vif, 
+					     (u32)scan_interval,
+					     (u8)rate_interval);
 	}
 
 	return count;
@@ -2207,11 +2306,14 @@ static ssize_t ath6kl_ht_coex_params_read(struct file *file,
 		vif = ath6kl_get_vif_by_index(ar, i);
 		if ((vif) &&
 			(vif->htcoex_ctx))
-			len += scnprintf(buf + len, sizeof(buf) - len, "int-%d hocoex_flags: %x, scan_interval: %d ms, num_scan: %d\n",
+			len += scnprintf(buf + len, sizeof(buf) - len, 
+					"int-%d flags %x, scan %d ms, num_scan %d, rate %d, t_cnt %d\n",
 					i,
 					vif->htcoex_ctx->flags,
 					vif->htcoex_ctx->scan_interval,
-					vif->htcoex_ctx->num_scan);
+					vif->htcoex_ctx->num_scan,
+					vif->htcoex_ctx->rate_rollback_interval,
+					vif->htcoex_ctx->tolerant40_cnt);
 	}
 
 	return simple_read_from_buffer(user_buf, count, ppos, buf, len);
@@ -2522,6 +2624,27 @@ static const struct file_operations fops_hif_pipe_max_sche = {
 };
 
 /* File operation functions for AP-APSD */
+static ssize_t ath6kl_ap_apsd_read(struct file *file,
+				char __user *user_buf,
+				size_t count, loff_t *ppos)
+{
+	struct ath6kl *ar = file->private_data;
+	struct ath6kl_vif *vif;
+	static u8 buf[128];
+	unsigned int len = 0;
+	int i;
+	
+	for (i = 0; i < ar->vif_max; i++) {
+		vif = ath6kl_get_vif_by_index(ar, i);
+		if ((vif) && (vif->nw_type == AP_NETWORK)) {
+			len += scnprintf(buf, sizeof(buf), "VAP(%d), apsd: %d\n", i,
+				vif->ap_apsd);
+		}
+	}
+	
+	return simple_read_from_buffer(user_buf, count, ppos, buf, len);
+}
+
 static ssize_t ath6kl_ap_apsd_write(struct file *file,
 				const char __user *user_buf,
 				size_t count, loff_t *ppos)
@@ -2544,9 +2667,11 @@ static ssize_t ath6kl_ap_apsd_write(struct file *file,
 	for (i = 0; i < ar->vif_max; i++) {
 		vif = ath6kl_get_vif_by_index(ar, i);
 		if ((vif) &&
-			(vif->nw_type == AP_NETWORK))
+			(vif->nw_type == AP_NETWORK)) {
 			ath6kl_wmi_ap_set_apsd(vif->ar->wmi, vif->fw_vif_idx,
 						ap_apsd ? WMI_AP_APSD_ENABLED : WMI_AP_APSD_DISABLED);
+			vif->ap_apsd = ap_apsd;
+		}
 	}
 
 	return count;
@@ -2554,6 +2679,7 @@ static ssize_t ath6kl_ap_apsd_write(struct file *file,
 
 /* debug fs for AP-APSD */
 static const struct file_operations fops_ap_apsd = {
+	.read = ath6kl_ap_apsd_read,
 	.write = ath6kl_ap_apsd_write,
 	.open = ath6kl_debugfs_open,
 	.owner = THIS_MODULE,
@@ -2561,6 +2687,27 @@ static const struct file_operations fops_ap_apsd = {
 };
 
 /* File operation functions for AP-IntraBss */
+static ssize_t ath6kl_ap_intrabss_read(struct file *file,
+				char __user *user_buf,
+				size_t count, loff_t *ppos)
+{
+	struct ath6kl *ar = file->private_data;
+	struct ath6kl_vif *vif;
+	u8 buf[256];
+	unsigned int len = 0;
+	int i;
+	
+	for (i = 0; i < ar->vif_max; i++) {
+		vif = ath6kl_get_vif_by_index(ar, i);
+		if ((vif) && (vif->nw_type == AP_NETWORK)) {
+			len += scnprintf(buf, sizeof(buf), "VAP(%d), ap_intrabss: %d\n", i,
+				vif->intra_bss);
+		}
+	}
+	
+	return simple_read_from_buffer(user_buf, count, ppos, buf, len);
+}
+
 static ssize_t ath6kl_ap_intrabss_write(struct file *file,
 				const char __user *user_buf,
 				size_t count, loff_t *ppos)
@@ -2592,6 +2739,7 @@ static ssize_t ath6kl_ap_intrabss_write(struct file *file,
 
 /* debug fs for AP-IntraBss */
 static const struct file_operations fops_ap_intrabss = {
+	.read = ath6kl_ap_intrabss_read,
 	.write = ath6kl_ap_intrabss_write,
 	.open = ath6kl_debugfs_open,
 	.owner = THIS_MODULE,
@@ -2663,6 +2811,79 @@ static const struct file_operations fops_force_passcan = {
 	.llseek = default_llseek,
 };
 
+static ssize_t ath6kl_get_pmkid_list(struct file *file,
+                                char __user *user_buf,
+                                size_t count, loff_t *ppos)
+{
+	struct ath6kl *ar = file->private_data;
+	struct ath6kl_vif *vif;
+	unsigned int len = 0, buf_len;
+	u8 *p;
+	u8 buf[512];
+	struct wmi_pmkid_list_reply *reply;
+	long left;
+
+	vif = ath6kl_vif_first(ar);
+	if (!vif)
+		return -EIO;
+
+	if (down_interruptible(&ar->sem))
+                return -EBUSY;
+
+	set_bit(PMKLIST_GET_PEND, &vif->flags);
+
+	if (ath6kl_wmi_get_pmkid_list(ar->wmi, 0)) {
+		up(&ar->sem);
+		return -EIO;
+	}
+
+	left = wait_event_interruptible_timeout(ar->event_wq,
+						!test_bit(PMKLIST_GET_PEND,
+						&vif->flags), WMI_TIMEOUT);
+
+	up(&ar->sem);
+
+	if (left <= 0)
+		return -ETIMEDOUT;
+
+	reply = (struct wmi_pmkid_list_reply *) vif->pmkid_list_buf;
+	p = buf;
+	buf_len = sizeof(buf);
+
+	len += scnprintf(p + len, buf_len - len, "PMKID List\n");
+
+	if (reply->num_pmkid != 0 && reply->num_pmkid <= WMI_MAX_PMKID_CACHE)
+	{
+		int i;
+		char *bssid = (char *)reply->bssid_list;
+		char *pmkid = (char *)reply->pmkid_list;
+
+		for (i = 0; i < reply->num_pmkid; i++) {
+			len += scnprintf(p + len, buf_len - len, "bssid: %02x:%02x:%02x:%02x:%02x:%02x\n",
+					(bssid[0] & 0xff), (bssid[1] & 0xff), (bssid[2] & 0xff),
+					(bssid[3] & 0xff), (bssid[4] & 0xff), (bssid[5] & 0xff));
+			len += scnprintf(p + len, buf_len - len,
+				"pmkid: %02x:%02x:%02x:%02x:%02x:%02x%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x\n",
+				(pmkid[0] & 0xff), (pmkid[1] & 0xff), (pmkid[2] & 0xff), (pmkid[3] & 0xff),
+				(pmkid[4] & 0xff), (pmkid[5] & 0xff), (pmkid[6] & 0xff), (pmkid[7] & 0xff),
+				(pmkid[8] & 0xff), (pmkid[9] & 0xff), (pmkid[10] & 0xff), (pmkid[11] & 0xff),
+				(pmkid[12] & 0xff), (pmkid[13] & 0xff), (pmkid[14] & 0xff), (pmkid[15] & 0xff));
+
+			bssid += (sizeof(struct wmi_pmkid) + ETH_ALEN);
+			pmkid += (sizeof(struct wmi_pmkid) + ETH_ALEN);
+		}
+	}
+
+	return simple_read_from_buffer(user_buf, count, ppos, buf, len);
+}
+
+static const struct file_operations fops_pmkid_list = {
+	.read = ath6kl_get_pmkid_list,
+	.open = ath6kl_debugfs_open,
+	.owner = THIS_MODULE,
+	.llseek = default_llseek,
+};
+
 static ssize_t ath6kl_txseries_write(struct file *file,
 				     const char __user *user_buf,
 				     size_t count, loff_t *ppos)
@@ -2679,7 +2900,9 @@ static ssize_t ath6kl_txseries_write(struct file *file,
 	ret = kstrtou64_from_user(user_buf, count, 0, &tx_series);
 	if (ret)
 		return ret;
-    
+
+	ar->debug.set_tx_series = tx_series;
+
 	if (ath6kl_wmi_set_tx_select_rates_on_all_mode(ar->wmi, vif->fw_vif_idx,
                                                     tx_series))
 		return -EIO;
@@ -2687,7 +2910,22 @@ static ssize_t ath6kl_txseries_write(struct file *file,
 	return count;
 }
 
+static ssize_t ath6kl_txseries_read(struct file *file, 
+                      char __user *user_buf,
+                      size_t count, loff_t *ppos)
+{
+    struct ath6kl *ar = file->private_data;
+    u8 buf[32];
+    unsigned int len = 0;
+    
+    len = scnprintf(buf, sizeof(buf), "Txratemask is 0x%llx\n",
+            ar->debug.set_tx_series);
+    
+    return simple_read_from_buffer(user_buf, count, ppos, buf, len);
+}
+
 static const struct file_operations fops_txseries_write = {
+	.read = ath6kl_txseries_read,
 	.write = ath6kl_txseries_write,
 	.open = ath6kl_debugfs_open,
 	.owner = THIS_MODULE,
@@ -2829,6 +3067,9 @@ int ath6kl_debug_init(struct ath6kl *ar)
 
 	debugfs_create_file("force_passcan", S_IRUSR | S_IWUSR,
 			    ar->debugfs_phy, ar, &fops_force_passcan);
+
+	debugfs_create_file("pmkid_list", S_IRUSR,
+			    ar->debugfs_phy, ar, &fops_pmkid_list);
 
 	debugfs_create_file("txrate_sereies", S_IWUSR,
 			    ar->debugfs_phy, ar, &fops_txseries_write);

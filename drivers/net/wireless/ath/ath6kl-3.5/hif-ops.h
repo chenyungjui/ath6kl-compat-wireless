@@ -222,4 +222,19 @@ static inline u16 ath6kl_hif_pipe_set_max_sche(struct ath6kl *ar,
 	return ar->hif_ops->pipe_set_max_sche(ar, max_sche_tx, max_sche_rx);
 }
 
+#ifdef CONFIG_HAS_EARLYSUSPEND
+static inline void ath6kl_hif_early_suspend(struct ath6kl *ar)
+{
+	ath6kl_dbg(ATH6KL_DBG_HIF, "hif early_suspend\n");
+
+	ar->hif_ops->early_suspend(ar);
+}
+static inline void ath6kl_hif_late_resume(struct ath6kl *ar)
+{
+	ath6kl_dbg(ATH6KL_DBG_HIF, "hif late_resume\n");
+
+	ar->hif_ops->late_resume(ar);
+}	
+#endif
+
 #endif

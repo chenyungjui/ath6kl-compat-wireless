@@ -126,6 +126,35 @@ struct wmi_set_btcoex_fe_antenna_cmd {
 	u8 fe_antenna_type;
 } __packed;
 
+struct btcoex_acl_config {
+	__le32 acl_wlan_medium_dur;
+	__le32 acl_bt_medium_dur;
+	__le32 acl_detect_timeout;
+	__le32 acl_pktcnt_lower_limit;
+	__le32 acl_iter_for_endis;
+	__le32 acl_pktcnt_upper_limit;
+	__le32 acl_flags;
+	__le32 link_id;
+} __packed;
+
+struct btcoex_pspoll_acl_config {
+	__le32 acl_data_resp_timeout;
+} __packed;
+
+struct btcoex_optmode_acl_config {
+	__le32 acl_min_low_rate_mbps;
+	__le32 acl_low_rate_cnt;
+	__le32 acl_high_pkt_ratio;
+	__le32 acl_max_aggr_size;
+	__le32 acl_pkt_stomp_cnt;
+} __packed;
+
+struct wmi_set_btcoex_acl_config_cmd {
+	struct btcoex_acl_config acl_config;
+	struct btcoex_pspoll_acl_config acl_pspoll_config;
+	struct btcoex_optmode_acl_config acl_optmode_config;
+} __packed;
+
 /* BT Coex */
 int ath6kl_wmi_set_btcoex_bt_op_status(struct wmi *wmi, u8 op_id, bool flag);
 int ath6kl_wmi_set_btcoex_sco_op(struct wmi *wmi, bool esco, u32 tx_interval,
@@ -133,4 +162,6 @@ int ath6kl_wmi_set_btcoex_sco_op(struct wmi *wmi, bool esco, u32 tx_interval,
 int ath6kl_wmi_set_btcoex_a2dp_op(struct wmi *wmi, u32 role, u32 ver, u32 ven);
 int ath6kl_wmi_set_btcoex_set_colocated_bt(struct wmi *wmi, u8 dev_type);
 int ath6kl_wmi_set_btcoex_set_fe_antenna(struct wmi *wmi, u8 antenna_type);
+int ath6kl_wmi_send_btcoex_cmd(struct wmi *wmi,
+				u8 *buf, int len);
 #endif /* WMI_BTCOEX_H */

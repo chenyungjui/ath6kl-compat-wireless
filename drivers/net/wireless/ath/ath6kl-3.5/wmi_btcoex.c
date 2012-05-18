@@ -360,6 +360,7 @@ static inline void set_default_a2dp(struct wmi_set_btcoex_a2dp_config_cmd *cmd)
 #define BTCOEX_A2DP_MIN_BURST_CNT_QCOM_BT	3
 #define BTCOEX_A2DP_PKT_STOMP_CNT_QCOM_BT	2
 #define A2DP_CONFIG_ALLOW_OPTIMIZATION	(1 << 0)
+#define A2DP_CONFIG_A2DP_HIGH_PRIO	(1 << 3)
 static inline void set_qcom_a2dp(struct wmi_set_btcoex_a2dp_config_cmd *cmd)
 {
 	struct btcoex_a2dp_config *a2dp_config = &cmd->a2dp_config;
@@ -482,6 +483,12 @@ int ath6kl_wmi_set_btcoex_a2dp_op(struct wmi *wmi, u32 role, u32 ver,
 
 	if (vendor == BT_VENDOR_QCOM)
 		set_qcom_a2dp(cmd);
+	else {
+		/* enable high priority A2DP for AR3002 */
+		struct btcoex_a2dp_config *a2dp_config = &cmd->a2dp_config;
+		a2dp_config->a2dp_flags |= A2DP_CONFIG_A2DP_HIGH_PRIO;
+	}
+		
 
 	ath6kl_dbg(ATH6KL_DBG_WMI, "WMI_SET_BTCOEX_A2DP_CONFIG_CMDID\n");
 	dump_a2dp_cmd(cmd);
@@ -512,10 +519,90 @@ int ath6kl_wmi_set_btcoex_set_colocated_bt(struct wmi *wmi, u8 dev_type)
 				  WMI_SET_BTCOEX_COLOCATED_BT_DEV_CMDID,
 				  NO_SYNC_WMIFLAG);
 }
+
+#define BTCOEX_ACL_WLAN_MEDIUM_DUR_DEFAULT	30
+#define BTCOEX_ACL_BT_MEDIUM_DUR_DEFAULT	30
+#define BTCOEX_ACL_DETECT_TIMEOUT_DEFAULT	100
+#define BTCOEX_ACL_PKTCNT_LOWER_LIMIT_DEFAULT	10
+#define BTCOEX_ACL_ITER_FOR_ENDIS_DEFAULT	3
+#define BTCOEX_ACL_PKTCNT_UPPER_LIMIT_DEFAULT	15
+#define BTCOEX_ACL_FLAGS_DEFAULT		1
+#define BTCOEX_ACL_LINK_ID_DEFAULT		0
+#define BTCOEX_ACL_DATA_RESP_TIMEOUT_DEFAULT	20
+#define BTCOEX_ACL_MIN_LOW_RATE_MBPS_DEFAULT	36
+#define BTCOEX_ACL_LOW_RATE_CNT_DEFAULT		25
+#define BTCOEX_ACL_HIGH_PKT_RATIO_DEFAULT	2
+#define BTCOEX_ACL_MAX_AGGR_SIZE_DEFAULT	8
+#define BTCOEX_ACL_PKT_STOMP_CNT_DEFAULT	0
+
+static inline void set_default_acl(struct wmi_set_btcoex_acl_config_cmd *cmd)
+{
+	struct btcoex_acl_config *acl_config = &cmd->acl_config;
+	struct btcoex_pspoll_acl_config *acl_pspoll_config = &cmd->acl_pspoll_config;
+	struct btcoex_optmode_acl_config *acl_optmode_config = &cmd->acl_optmode_config;
+
+	acl_config->acl_wlan_medium_dur =
+		cpu_to_le32(BTCOEX_ACL_WLAN_MEDIUM_DUR_DEFAULT);
+	acl_config->acl_bt_medium_dur =
+		cpu_to_le32(BTCOEX_ACL_BT_MEDIUM_DUR_DEFAULT);
+	acl_config->acl_detect_timeout =
+		cpu_to_le32(BTCOEX_ACL_DETECT_TIMEOUT_DEFAULT);
+	acl_config->acl_pktcnt_lower_limit =
+		cpu_to_le32(BTCOEX_ACL_PKTCNT_LOWER_LIMIT_DEFAULT);
+	acl_config->acl_iter_for_endis =
+		cpu_to_le32(BTCOEX_ACL_ITER_FOR_ENDIS_DEFAULT);
+	acl_config->acl_pktcnt_upper_limit =
+		cpu_to_le32(BTCOEX_ACL_PKTCNT_UPPER_LIMIT_DEFAULT);
+	acl_config->acl_flags =
+		cpu_to_le32(BTCOEX_ACL_FLAGS_DEFAULT);
+	acl_config->link_id = 
+		cpu_to_le32(BTCOEX_ACL_LINK_ID_DEFAULT);
+
+	acl_pspoll_config->acl_data_resp_timeout =
+		cpu_to_le32(BTCOEX_ACL_DATA_RESP_TIMEOUT_DEFAULT);
+
+	acl_optmode_config->acl_min_low_rate_mbps =
+		cpu_to_le32(BTCOEX_ACL_MIN_LOW_RATE_MBPS_DEFAULT);
+	acl_optmode_config->acl_low_rate_cnt =
+		cpu_to_le32(BTCOEX_ACL_LOW_RATE_CNT_DEFAULT);
+	acl_optmode_config->acl_high_pkt_ratio =
+		cpu_to_le32(BTCOEX_ACL_HIGH_PKT_RATIO_DEFAULT);
+	acl_optmode_config->acl_max_aggr_size =
+		cpu_to_le32(BTCOEX_ACL_MAX_AGGR_SIZE_DEFAULT);
+	acl_optmode_config->acl_pkt_stomp_cnt =
+		cpu_to_le32(BTCOEX_ACL_PKT_STOMP_CNT_DEFAULT);
+}
+
+int ath6kl_wmi_set_btcoex_acl_op(struct wmi *wmi)
+{
+	struct wmi_set_btcoex_acl_config_cmd *cmd;
+	struct sk_buff *skb;
+	int ret;
+
+	skb = ath6kl_wmi_btcoex_get_new_buf(sizeof
+			(struct wmi_set_btcoex_acl_config_cmd));
+	if (!skb)
+		return -ENOMEM;
+
+	cmd = (struct wmi_set_btcoex_acl_config_cmd *)skb->data;
+	set_default_acl(cmd);
+
+	ath6kl_dbg(ATH6KL_DBG_WMI, "WMI_SET_BTCOEX_ACL_CONFIG_CMDID\n");
+
+	ret = ath6kl_wmi_cmd_send(wmi, 0, skb, 
+		WMI_SET_BTCOEX_ACLCOEX_CONFIG_CMDID,
+		NO_SYNC_WMIFLAG);
+
+	printk("set btc acl status %d\n", ret);
+
+	return ret;
+}
+
 int ath6kl_wmi_set_btcoex_set_fe_antenna(struct wmi *wmi, u8 antenna_type)
 {
 	struct wmi_set_btcoex_fe_antenna_cmd *cmd;
 	struct sk_buff *skb;
+	int ret;
 
 	skb = ath6kl_wmi_btcoex_get_new_buf(sizeof
 				(struct wmi_set_btcoex_fe_antenna_cmd));
@@ -529,7 +616,106 @@ int ath6kl_wmi_set_btcoex_set_fe_antenna(struct wmi *wmi, u8 antenna_type)
 	ath6kl_dbg(ATH6KL_DBG_WMI, "\tFe antenna Type: %x\n",
 		  cmd->fe_antenna_type);
 
+	ret = ath6kl_wmi_cmd_send(wmi, 0, skb,
+		WMI_SET_BTCOEX_FE_ANT_CMDID,
+		NO_SYNC_WMIFLAG);
+
+	/* WAR: send acl coex config here to avoid one more NL80211 cmd.
+	 * Enable opt mode for ACL by default.
+	 */
+	ath6kl_wmi_set_btcoex_acl_op(wmi);
+	
+	return ret;
+}
+
+static int ath6kl_get_wmi_cmd(int nl_cmd)
+{
+	int wmi_cmd = 0;
+	switch (nl_cmd) {
+	case NL80211_WMI_SET_BT_STATUS:
+		ath6kl_dbg(ATH6KL_DBG_WMI, "Set BT status\n");
+		wmi_cmd = WMI_SET_BT_STATUS_CMDID;
+		break;
+
+	case NL80211_WMI_SET_BT_PARAMS:
+		ath6kl_dbg(ATH6KL_DBG_WMI, "Set BT params\n");
+		wmi_cmd = WMI_SET_BT_PARAMS_CMDID;
+		break;
+
+	case NL80211_WMI_SET_BT_FT_ANT:
+		ath6kl_dbg(ATH6KL_DBG_WMI, "Set BT FT antenna\n");
+		wmi_cmd = WMI_SET_BTCOEX_FE_ANT_CMDID;
+		break;
+
+	case NL80211_WMI_SET_COLOCATED_BT_DEV:
+		ath6kl_dbg(ATH6KL_DBG_WMI, "Set BT collocated dev\n");
+		wmi_cmd = WMI_SET_BTCOEX_COLOCATED_BT_DEV_CMDID;
+		break;
+
+	case NL80211_WMI_SET_BT_INQUIRY_PAGE_CONFIG:
+		ath6kl_dbg(ATH6KL_DBG_WMI, "Set BT inquiry page\n");
+		wmi_cmd = WMI_SET_BTCOEX_BTINQUIRY_PAGE_CONFIG_CMDID;
+		break;
+
+	case NL80211_WMI_SET_BT_SCO_CONFIG:
+		ath6kl_dbg(ATH6KL_DBG_WMI, "Set BT sco config\n");
+		wmi_cmd = WMI_SET_BTCOEX_SCO_CONFIG_CMDID;
+		break;
+
+	case NL80211_WMI_SET_BT_A2DP_CONFIG:
+		ath6kl_dbg(ATH6KL_DBG_WMI, "Set BT a2dp config\n");
+		wmi_cmd = WMI_SET_BTCOEX_A2DP_CONFIG_CMDID;
+		break;
+
+	case NL80211_WMI_SET_BT_ACLCOEX_CONFIG:
+		ath6kl_dbg(ATH6KL_DBG_WMI, "Set BT acl config\n");
+		wmi_cmd = WMI_SET_BTCOEX_ACLCOEX_CONFIG_CMDID;
+		break;
+
+	case NL80211_WMI_SET_BT_DEBUG:
+		ath6kl_dbg(ATH6KL_DBG_WMI, "Set BT bt debug\n");
+		wmi_cmd = WMI_SET_BTCOEX_DEBUG_CMDID;
+		break;
+
+	case NL80211_WMI_SET_BT_OPSTATUS:
+		ath6kl_dbg(ATH6KL_DBG_WMI, "Set BT op status\n");
+		wmi_cmd = WMI_SET_BTCOEX_BT_OPERATING_STATUS_CMDID;
+		break;
+
+	case NL80211_WMI_GET_BT_CONFIG:
+		ath6kl_dbg(ATH6KL_DBG_WMI, "Get BT config\n");
+		wmi_cmd = WMI_GET_BTCOEX_CONFIG_CMDID;
+		break;
+
+	case NL80211_WMI_GET_BT_STATS:
+		ath6kl_dbg(ATH6KL_DBG_WMI, "Get BT status\n");
+		wmi_cmd = WMI_GET_BTCOEX_STATS_CMDID;
+		break;
+	}
+	return wmi_cmd;
+}
+
+int ath6kl_wmi_send_btcoex_cmd(struct wmi *wmi,
+			u8 *buf, int len)
+{
+	struct sk_buff *skb;
+	u32 nl_cmd;
+	int wmi_cmd;
+
+	nl_cmd = *(u32 *)buf;
+	buf += sizeof(u32);
+	len -= sizeof(u32);
+	wmi_cmd = ath6kl_get_wmi_cmd(nl_cmd);
+	if (wmi_cmd == 0)
+		return -ENOMEM;
+
+	skb = ath6kl_wmi_btcoex_get_new_buf(len);
+	if (!skb)
+		return -ENOMEM;
+
+	memcpy(skb->data, buf, len);
+
 	return ath6kl_wmi_cmd_send(wmi, 0, skb,
-				  WMI_SET_BTCOEX_FE_ANT_CMDID,
-				  NO_SYNC_WMIFLAG);
+			(enum wmi_cmd_id)wmi_cmd,
+			NO_SYNC_WMIFLAG);
 }

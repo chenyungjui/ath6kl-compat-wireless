@@ -24,16 +24,36 @@
 #include <linux/circ_buf.h>
 #include <linux/ip.h>
 #include <net/cfg80211.h>
+#ifdef CONFIG_ANDROID
+#ifdef CONFIG_HAS_WAKELOCK
+#include <linux/wakelock.h>
+#endif
+#endif
+#ifdef CONFIG_HAS_EARLYSUSPEND
+#include <linux/earlysuspend.h>
+#endif
 #include "htc.h"
 #include "wmi.h"
 #include "bmi.h"
 #include "target.h"
 #include "wmi_btcoex.h"
 #include "htcoex.h"
+#include "p2p.h"
 #include <linux/wireless.h>
+
+#define MAKE_STR(symbol) #symbol
+#define TO_STR(symbol) MAKE_STR(symbol)
+
+/* The script (used for release builds) modifies the following line. */
+#define __BUILD_VERSION_ 3.5.0.9999
+
+#define DRV_VERSION		TO_STR(__BUILD_VERSION_)
 
 /* enable diagnostic by default in this version */
 #define ATH6KL_DIAGNOSTIC 1
+#ifdef ATH6KL_DIAGNOSTIC
+#include "diagnose.h"
+#endif
 
 #define MAX_ATH6KL                        1
 #define ATH6KL_MAX_RX_BUFFERS             16
@@ -64,6 +84,8 @@
 #define DISCON_TIMER_INTVAL               10000  /* in msec */
 #define A_DEFAULT_LISTEN_INTERVAL         100
 #define A_MAX_WOW_LISTEN_INTERVAL         1000
+
+#define ATH6KL_DISCONNECT_TIMEOUT 	  3
 
 /* includes also the null byte */
 #define ATH6KL_FIRMWARE_MAGIC               "QCA-ATH6KL"
@@ -96,12 +118,14 @@ struct ath6kl_fw_ie {
 	u8 data[0];
 };
 
-#define ATH6KL_IOCTL_STANDARD01		(SIOCDEVPRIVATE+1)		/* Reserved for Android PNO */
+#define ATH6KL_IOCTL_STANDARD01		(SIOCDEVPRIVATE+1)		/* Reserved for Android PNO and vendor specific functions */
 #define ATH6KL_IOCTL_STANDARD02		(SIOCDEVPRIVATE+2)		/* Standard do_ioctl() ioctl interface */
 #define ATH6KL_IOCTL_STANDARD12		(SIOCDEVPRIVATE+12)		/* hole, please reserved */
 #define ATH6KL_IOCTL_STANDARD13		(SIOCDEVPRIVATE+13)		/* TX99 */
 #define ATH6KL_IOCTL_STANDARD15		(SIOCDEVPRIVATE+15)		/* hole, please reserved */
-#define ATH6KL_IOCTL_EXTENDED		(SIOCIWFIRSTPRIV+31)	/* Linux Wirelesss Extensions, private ioctl interface */
+#define ATH6KL_IOCTL_WEXT_PRIV26	(SIOCIWFIRSTPRIV+26)		/* ATH6KL_IOCTL_EXTENDED - extended ioctl */
+#define ATH6KL_IOCTL_WEXT_PRIV27	(SIOCIWFIRSTPRIV+27)		/* reserved for QCSAP (old) */
+#define ATH6KL_IOCTL_WEXT_PRIV31	(SIOCIWFIRSTPRIV+31)		/* reserved for QCSAP */
 
 #define ATH6KL_IOCTL_AP_APSD		(0)
 #define ATH6KL_IOCTL_AP_INTRABSS	(1)
@@ -123,6 +147,12 @@ struct ath6kl_traffic_activity_change {
 struct ath6kl_ioctl_cmd {
 	u32 subcmd;
 	u32 options;
+};
+
+struct ath6kl_android_wifi_priv_cmd {
+	char *buf;
+	int used_len;
+	int total_len;
 };
 
 #define ATH6KL_FW_API2_FILE "fw-2.bin"
@@ -190,8 +220,22 @@ struct ath6kl_ioctl_cmd {
 #define AR6004_HW_1_2_EPPING_FILE             "ath6k/AR6004/hw1.2/epping.bin"
 #define AR6004_HW_1_2_SOFTMAC_FILE            "ath6k/AR6004/hw1.2/softmac.bin"
 
+/* AR6004 1.3 definitions */
+#define AR6004_HW_1_3_VERSION                 0x31c8088a
+#define AR6004_HW_1_3_FW_DIR			"ath6k/AR6004/hw1.3"
+#define AR6004_HW_1_3_FIRMWARE_2_FILE         "fw-2.bin"
+#define AR6004_HW_1_3_FIRMWARE_FILE           "fw.ram.bin"
+#define AR6004_HW_1_3_TCMD_FIRMWARE_FILE      "utf.bin"
+#define AR6004_HW_1_3_UTF_FIRMWARE_FILE	"utf.bin"
+#define AR6004_HW_1_3_TESTSCRIPT_FILE	"nullTestFlow.bin"
+#define AR6004_HW_1_3_BOARD_DATA_FILE         "ath6k/AR6004/hw1.3/bdata.bin"
+#define AR6004_HW_1_3_DEFAULT_BOARD_DATA_FILE \
+	"ath6k/AR6004/hw1.3/bdata.bin"
+#define AR6004_HW_1_3_EPPING_FILE             "ath6k/AR6004/hw1.3/epping.bin"
+#define AR6004_HW_1_3_SOFTMAC_FILE            "ath6k/AR6004/hw1.3/softmac.bin"
+
 /* AR6004 1.6 definitions */
-#define AR6004_HW_1_6_VERSION                 0x31c808a3
+#define AR6004_HW_1_6_VERSION                 0x31c808c1
 #define AR6004_HW_1_6_FW_DIR			"ath6k/AR6004/hw1.6"
 #define AR6004_HW_1_6_FIRMWARE_2_FILE         "fw-2.bin"
 #define AR6004_HW_1_6_FIRMWARE_FILE           "fw.ram.bin"
@@ -267,6 +311,8 @@ struct ath6kl_ioctl_cmd {
 
 #define ATH6KL_PSQ_CHECK_AGE   (1 * 1000)  				/* 1 sec. */
 #define ATH6KL_PSQ_MAX_AGE     (5)					/* 5 cycles */
+
+#define ATH6KL_RSN_CAP_NULLCONF		(0xffff)
 
 /* configuration lags */
 /*
@@ -613,6 +659,8 @@ enum ath6kl_vif_state {
 	HOST_SLEEP_MODE_CMD_PROCESSED,
 	ROC_ONGOING,
 	ROC_CANCEL_PEND,
+	DISCONNECT_PEND,
+	PMKLIST_GET_PEND,
 };
 
 struct ath6kl_vif {
@@ -648,6 +696,7 @@ struct ath6kl_vif {
 	struct cfg80211_scan_request *scan_req;
 	enum sme_state sme_state;
 	u8 intra_bss;
+	u8 ap_apsd;
 	struct wmi_ap_mode_stat ap_stats;
 	u8 ap_country_code[3];
 	struct ath6kl_sta sta_list[AP_MAX_NUM_STA];
@@ -667,6 +716,13 @@ struct ath6kl_vif {
 	struct target_stats target_stats;
 	struct htcoex *htcoex_ctx;
 	struct wmi_scan_params_cmd sc_params;
+	u8 pmkid_list_buf[MAX_PMKID_LIST_SIZE];
+	u16 last_rsn_cap;
+#ifdef ATH6KL_DIAGNOSTIC
+	struct wifi_diag diag;
+#endif    
+        u8 connid;
+	struct p2p_ps_info *p2p_ps_info_ctx;
 };
 
 #define WOW_LIST_ID		0
@@ -691,6 +747,28 @@ enum ath6kl_state {
 	ATH6KL_STATE_DEEPSLEEP,
 	ATH6KL_STATE_CUTPOWER,
 	ATH6KL_STATE_WOW,
+};
+
+struct ath6kl_conn_list
+{
+    struct list_head conn_queue;
+    struct list_head re_queue;
+
+    union
+    {
+        struct
+        {
+            u8 bk_uapsd    : 1;
+            u8 be_uapsd    : 1;
+            u8 vi_uapsd    : 1;
+            u8 vo_uapsd    : 1;
+            u8 ps          : 1;  // 1 means power saved
+            u8 ocs         : 1;  // 1 means off channel
+            u8 res         : 2;
+        };
+        u8 connect_status;
+    };
+    bool previous_can_send;
 };
 
 struct ath6kl {
@@ -810,7 +888,7 @@ struct ath6kl {
 	struct dentry *debugfs_phy;
 
 	bool p2p;
-	bool p2p_dedicate_concurrent;
+	bool p2p_concurrent;
 
 	struct ath6kl_btcoex btcoex_info;
 	u32 mod_debug_quirks;
@@ -824,6 +902,7 @@ struct ath6kl {
 		unsigned int dbgfs_diag_reg;
 		u32 diag_reg_addr_wr;
 		u32 diag_reg_val_wr;
+		u64 set_tx_series;
 
 		struct {
 			unsigned int invalid_rate;
@@ -836,6 +915,8 @@ struct ath6kl {
 		u8 disc_timeout;
 		u8 mimo_ps_enable;
 		u8 force_passive;
+        u16 bgscan_int;
+        enum wmi_roam_mode roam_mode;
 
 		struct green_tx_param {
 			u32 green_tx_enable;
@@ -859,6 +940,14 @@ struct ath6kl {
 			u8 no_rfb_detect;
 		} lpl_force_enable_params;
 
+        struct power_param {
+            u16 idle_period;
+            u16 ps_poll_num;
+            u16 dtim;
+            u16 tx_wakeup;
+            u16 num_tx;
+        } power_params;
+
 		struct ht_cap_param {
 			u8 isConfig;
 			u8 band;
@@ -867,6 +956,18 @@ struct ath6kl {
 		} ht_cap_param[IEEE80211_NUM_BANDS];
 	} debug;
 #endif /* CONFIG_ATH6KL_DEBUG */
+
+	int wow_irq;
+#ifdef CONFIG_ANDROID
+#ifdef CONFIG_HAS_WAKELOCK
+	struct wake_lock wake_lock;
+#endif /* CONFIG_HAS_WAKELOCK */
+#endif
+    struct ath6kl_conn_list conn_list[NUM_CONN];
+#ifdef CONFIG_HAS_EARLYSUSPEND
+    struct early_suspend early_suspend;
+#endif /* CONFIG_HAS_EARLYSUSPEND */
+
 };
 
 static inline void *ath6kl_priv(struct net_device *dev)
@@ -946,6 +1047,9 @@ bool ath6kl_mgmt_powersave_ap(struct ath6kl_vif *vif,
                                      bool dont_wait_for_ack,
                                      u32 *flags);
 int ath6kl_data_tx(struct sk_buff *skb, struct net_device *dev);
+int ath6kl_conn_list_init(struct ath6kl *ar);
+void ath6kl_tx_scheduler(struct ath6kl_vif *vif);
+void ath6kl_flowctrl_change(struct ath6kl_vif *vif);
 
 struct aggr_info *aggr_init(struct ath6kl_vif *vif);
 struct aggr_conn_info *aggr_init_conn(struct ath6kl_vif *vif);
@@ -989,7 +1093,7 @@ enum htc_endpoint_id ath6kl_ac2_endpoint_id(void *devt, u8 ac);
 void ath6kl_pspoll_event(struct ath6kl_vif *vif, u8 aid);
 
 void ath6kl_dtimexpiry_event(struct ath6kl_vif *vif);
-void ath6kl_disconnect(struct ath6kl_vif *vif);
+int ath6kl_disconnect(struct ath6kl_vif *vif);
 void aggr_recv_delba_req_evt(struct ath6kl_vif *vif, u8 tid);
 void aggr_recv_addba_req_evt(struct ath6kl_vif *vif, u8 tid, u16 seq_no,
 			     u8 win_sz);
@@ -1024,5 +1128,9 @@ struct ath6kl_mgmt_buf *ath6kl_mgmt_dequeue_head(struct ath6kl_mgmt_buf_head *ps
 void ath6kl_psq_age_handler(unsigned long ptr);
 void ath6kl_psq_age_start(struct ath6kl_sta *conn);
 void ath6kl_psq_age_stop(struct ath6kl_sta *conn);
+#ifdef CONFIG_ANDROID
+void ath6kl_sdio_init_msm(void);
+void ath6kl_sdio_exit_msm(void);
+#endif
 
 #endif /* CORE_H */

@@ -1,5 +1,6 @@
+
 /*
- * Copyright (c) 2004-2011 Atheros Communications Inc.
+ * Copyright (c) 2011 Atheros Communications Inc.
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -13,20 +14,18 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
+#ifndef _ATH_NETLINK_H_
+#define _ATH_NETLINK_H_
+#include "linux/if.h"
+#include "linux/socket.h"
+#include "linux/netlink.h"
+#define NETLINK_ATH_EVENT     NETLINK_GENERIC+4
 
-#ifndef _HOST_RTT_API_H_
-#define _HOST_RTT_API_H_
+#define MAC_ADDR_LEN           6 
 
+int ath_netlink_init(void);
+int ath_netlink_delete(void);
+void ath_netlink_send(char *event_data, u32 event_datalen);
+int ath_netlink_free(void);
 
-int rttm_init(void *);
-
-int rttm_getbuf(void **buf,u32 *len);
-
-int rttm_recv(void *buf,u32 len);
-
-void rttm_free(void);
-
-int rttm_issue_request(void *buf);
-
-
-#endif /* _HOST_PKTLOG_API_H_ */
+#endif /* _ATH_NETLINK_H_ */

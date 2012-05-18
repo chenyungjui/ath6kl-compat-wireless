@@ -28,7 +28,11 @@ enum ATH6KL_MODULE_QUIRKS {
 	ATH6KL_MODULES_ANI_ENABLE       = BIT(5), /* anti-noise-immunity */
 	ATH6KL_MODULE_ENABLE_EPPING		= BIT(6), /* enable endpoing loopback */
 	ATH6KL_MODULE_DISABLE_5G		= BIT(7), /* disable 5G support */
-	ATH6KL_MODULE_P2P_DE_CONCUR		= BIT(8), /* p2p dedicate concurrent mode */
+};
+
+enum ATH6KL_MODULE_P2P {
+	ATH6KL_MODULEP2P_P2P_ENABLE			= BIT(0), /* enable single interface p2p */
+	AT6HKL_MODULEP2P_CONCURRENT_ENABLE  = BIT(1), /* enable p2p_concurrent */
 };
 
 enum ATH6K_DEBUG_MASK {
@@ -59,6 +63,7 @@ enum ATH6K_DEBUG_MASK {
 	ATH6KL_DBG_WLAN_TX_AMSDU = BIT(24),    /* wlan tx a-msdu */
 	ATH6KL_DBG_POWERSAVE 	= BIT(25),    /* power-saving */
 	ATH6KL_DBG_WOWLAN	= BIT(26),    /* wowlan tracing */
+        ATH6KL_DBG_RTT          = BIT(27),
 	ATH6KL_DBG_ANY	        = 0xffffffff  /* enable all logs */
 };
 

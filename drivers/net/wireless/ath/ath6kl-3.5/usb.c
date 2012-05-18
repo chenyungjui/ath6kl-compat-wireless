@@ -27,6 +27,7 @@
 #define ATH6KL_USB_RX_BUFFER_SIZE  2048
 #define ATH6KL_USB_RX_BUNDLE_BUFFER_SIZE  16896
 #define ATH6KL_USB_TX_BUNDLE_BUFFER_SIZE  16384
+#define WORKER_LOCK_BIT	0
 
 /* tx/rx pipes for usb */
 enum ATH6KL_USB_PIPE_ID {
@@ -89,6 +90,7 @@ struct ath6kl_usb_pipe {
 	struct sk_buff_head io_comp_queue;
 	struct usb_endpoint_descriptor *ep_desc;
 	struct ath6kl_usb_pipe_stat usb_pipe_stat;
+	volatile unsigned long worker_lock;
 };
 
 #define ATH6KL_USB_PIPE_FLAG_TX    (1 << 0)
@@ -934,6 +936,11 @@ static void ath6kl_usb_io_comp_work(struct work_struct *work)
 
 	pipe_st->num_io_comp++;
 	device = pipe->ar_usb;
+
+	if(test_and_set_bit(WORKER_LOCK_BIT, &pipe->worker_lock)) {
+		return;
+	}
+
 	while ((buf = skb_dequeue(&pipe->io_comp_queue))) {
 		if (pipe->flags & ATH6KL_USB_PIPE_FLAG_TX) {
 			ath6kl_dbg(ATH6KL_DBG_USB_BULK,
@@ -942,6 +949,7 @@ static void ath6kl_usb_io_comp_work(struct work_struct *work)
 				tx_completion(device->ar->htc_target, buf);
 
 			if (tx++ > device->max_sche_tx) {
+				clear_bit(WORKER_LOCK_BIT, &pipe->worker_lock);
 				pipe_st->num_tx_resche++;
 				goto reschedule;
 			}
@@ -953,11 +961,14 @@ static void ath6kl_usb_io_comp_work(struct work_struct *work)
 					      pipe->logical_pipe_num);
 
 			if (rx++ > device->max_sche_rx) { 
+				clear_bit(WORKER_LOCK_BIT, &pipe->worker_lock);
 				pipe_st->num_rx_resche++;
 				goto reschedule;
 			}
 		}
 	}
+
+	clear_bit(WORKER_LOCK_BIT, &pipe->worker_lock);
 
 	if (tx > pipe_st->num_max_tx)
 		pipe_st->num_max_tx = tx;
@@ -1040,6 +1051,7 @@ static struct ath6kl_usb *ath6kl_usb_create(struct usb_interface *interface)
 		INIT_WORK(&pipe->io_complete_work,
 			  ath6kl_usb_io_comp_work);
 		skb_queue_head_init(&pipe->io_comp_queue);
+		pipe->worker_lock = 0;
 	}
 
 	ar_usb->diag_cmd_buffer = kzalloc(ATH6KL_USB_MAX_DIAG_CMD, GFP_KERNEL);
@@ -1693,6 +1705,23 @@ static void ath6kl_usb_cleanup_scatter(struct ath6kl *ar)
 	return;
 }
 
+#ifdef CONFIG_HAS_EARLYSUSPEND
+static void ath6kl_usb_early_suspend(struct ath6kl *ar)
+{
+        struct ath6kl_usb *device = ath6kl_usb_priv(ar);
+
+        usb_enable_autosuspend(device->udev);
+
+}
+
+static void ath6kl_usb_late_resume(struct ath6kl *ar)
+{
+        struct ath6kl_usb *device = ath6kl_usb_priv(ar);
+
+        usb_disable_autosuspend(device->udev);
+}
+#endif
+
 static const struct ath6kl_hif_ops ath6kl_usb_ops = {
 	.diag_read32 = ath6kl_usb_diag_read32,
 	.diag_write32 = ath6kl_usb_diag_write32,
@@ -1713,6 +1742,11 @@ static const struct ath6kl_hif_ops ath6kl_usb_ops = {
 	.suspend = ath6kl_usb_suspend,
 	.resume = ath6kl_usb_resume,
 	.cleanup_scatter = ath6kl_usb_cleanup_scatter,
+#ifdef CONFIG_HAS_EARLYSUSPEND	
+	.early_suspend = ath6kl_usb_early_suspend,
+	.late_resume = ath6kl_usb_late_resume,
+#endif
+
 };
 
 /* ath6kl usb driver registered functions */
@@ -1886,6 +1920,7 @@ module_exit(ath6kl_usb_exit);
 MODULE_AUTHOR("Atheros Communications, Inc.");
 MODULE_DESCRIPTION("Driver support for Atheros AR600x USB devices");
 MODULE_LICENSE("Dual BSD/GPL");
+MODULE_VERSION(DRV_VERSION);
 MODULE_FIRMWARE(AR6004_HW_1_0_FW_DIR "/" AR6004_HW_1_0_FIRMWARE_FILE);
 MODULE_FIRMWARE(AR6004_HW_1_0_BOARD_DATA_FILE);
 MODULE_FIRMWARE(AR6004_HW_1_0_DEFAULT_BOARD_DATA_FILE);
@@ -1895,6 +1930,9 @@ MODULE_FIRMWARE(AR6004_HW_1_1_DEFAULT_BOARD_DATA_FILE);
 MODULE_FIRMWARE(AR6004_HW_1_2_FW_DIR "/" AR6004_HW_1_2_FIRMWARE_FILE);
 MODULE_FIRMWARE(AR6004_HW_1_2_BOARD_DATA_FILE);
 MODULE_FIRMWARE(AR6004_HW_1_2_DEFAULT_BOARD_DATA_FILE);
+MODULE_FIRMWARE(AR6004_HW_1_3_FW_DIR "/" AR6004_HW_1_3_FIRMWARE_FILE);
+MODULE_FIRMWARE(AR6004_HW_1_3_BOARD_DATA_FILE);
+MODULE_FIRMWARE(AR6004_HW_1_3_DEFAULT_BOARD_DATA_FILE);
 MODULE_FIRMWARE(AR6004_HW_1_6_FW_DIR "/" AR6004_HW_1_6_FIRMWARE_FILE);
 MODULE_FIRMWARE(AR6004_HW_1_6_BOARD_DATA_FILE);
 MODULE_FIRMWARE(AR6004_HW_1_6_DEFAULT_BOARD_DATA_FILE);
