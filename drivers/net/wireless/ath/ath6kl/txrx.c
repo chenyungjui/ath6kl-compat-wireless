@@ -1124,11 +1124,13 @@ static bool aggr_process_recv_frm(struct aggr_info_conn *agg_conn, u8 tid,
 		    ((end > extended_end) && (cur > extended_end) &&
 		     (cur < end))) {
 			aggr_deque_frms(agg_conn, tid, 0, 0);
+			spin_lock_bh(&rxtid->lock);
 			if (cur >= rxtid->hold_q_sz - 1)
 				rxtid->seq_next = cur - (rxtid->hold_q_sz - 1);
 			else
 				rxtid->seq_next = ATH6KL_MAX_SEQ_NO -
 						  (rxtid->hold_q_sz - 2 - cur);
+			spin_unlock_bh(&rxtid->lock);
 		} else {
 			/*
 			 * Dequeue only those frames that are outside the
@@ -1182,25 +1184,28 @@ static bool aggr_process_recv_frm(struct aggr_info_conn *agg_conn, u8 tid,
 	aggr_deque_frms(agg_conn, tid, 0, 1);
 
 	if (agg_conn->timer_scheduled)
-		rxtid->progress = true;
-	else
-		for (idx = 0 ; idx < rxtid->hold_q_sz; idx++) {
-			if (rxtid->hold_q[idx].skb) {
-				/*
-				 * There is a frame in the queue and no
-				 * timer so start a timer to ensure that
-				 * the frame doesn't remain stuck
-				 * forever.
-				 */
-				agg_conn->timer_scheduled = true;
-				mod_timer(&agg_conn->timer,
-					  (jiffies +
-					   HZ * (AGGR_RX_TIMEOUT) / 1000));
-				rxtid->progress = false;
-				rxtid->timer_mon = true;
-				break;
-			}
+		return is_queued;
+
+	for (idx = 0 ; idx < rxtid->hold_q_sz; idx++) {
+		spin_lock_bh(&rxtid->lock);
+		if (rxtid->hold_q[idx].skb) {
+			/*
+			 * There is a frame in the queue and no
+			 * timer so start a timer to ensure that
+			 * the frame doesn't remain stuck
+			 * forever.
+			 */
+			agg_conn->timer_scheduled = true;
+			mod_timer(&agg_conn->timer,
+					(jiffies +
+					 HZ * (AGGR_RX_TIMEOUT) / 1000));
+			rxtid->progress = false;
+			rxtid->timer_mon = true;
+			spin_unlock_bh(&rxtid->lock);
+			break;
 		}
+		spin_unlock_bh(&rxtid->lock);
+	}
 
 	return is_queued;
 }
@@ -1621,12 +1626,15 @@ static void aggr_timeout(unsigned long arg)
 
 		if (rxtid->aggr && rxtid->hold_q) {
 			for (j = 0; j < rxtid->hold_q_sz; j++) {
+				spin_lock_bh(&rxtid->lock);
 				if (rxtid->hold_q[j].skb) {
 					aggr_conn->timer_scheduled = true;
 					rxtid->timer_mon = true;
 					rxtid->progress = false;
+					spin_unlock_bh(&rxtid->lock);
 					break;
 				}
+				spin_unlock_bh(&rxtid->lock);
 			}
 
 			if (j >= rxtid->hold_q_sz)
