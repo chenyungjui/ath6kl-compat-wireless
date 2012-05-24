@@ -2,6 +2,9 @@ ifeq ($(BOARD_HAS_ATH_WLAN), true)
 LOCAL_PATH := $(call my-dir)
 DLKM_DIR := build/dlkm
 
+export BUILD_ATH6KL_VER_32=1
+export HAVE_CFG80211=1
+
 include $(CLEAR_VARS)
 LOCAL_MODULE             := cfg80211.ko
 LOCAL_MODULE_TAGS        := eng
@@ -21,6 +24,7 @@ LOCAL_PATH := $(call my-dir)
 DLKM_DIR := build/dlkm
 
 export BUILD_ATH6KL_VER_35=1
+export HAVE_CFG80211=1
 
 include $(CLEAR_VARS)
 LOCAL_MODULE             := cfg80211.ko
@@ -34,4 +38,26 @@ LOCAL_MODULE_TAGS        := eng
 LOCAL_MODULE_KBUILD_NAME := wlan.ko
 LOCAL_MODULE_PATH        := $(TARGET_OUT)/lib/modules/ath6kl-3.5
 include $(DLKM_DIR)/AndroidKernelModule.mk
+endif
+
+ifeq ($(BOARD_HAS_ATH_ETH_ALX), true)
+
+export BUILD_ATH_ETH_ALX=1
+
+LOCAL_PATH := $(call my-dir)
+DLKM_DIR := build/dlkm
+
+include $(CLEAR_VARS)
+LOCAL_MODULE             := compat.ko
+LOCAL_MODULE_TAGS        := eng
+LOCAL_MODULE_PATH        := $(TARGET_OUT)/lib/modules/compat
+include $(DLKM_DIR)/AndroidKernelModule.mk
+
+include $(CLEAR_VARS)
+LOCAL_MODULE             := alx.ko
+LOCAL_MODULE_KBUILD_NAME := eth.ko
+LOCAL_MODULE_TAGS        := eng
+LOCAL_MODULE_PATH        := $(TARGET_OUT)/lib/modules/alx
+include $(DLKM_DIR)/AndroidKernelModule.mk
+
 endif
