@@ -1,6 +1,7 @@
-ifeq ($(BOARD_HAS_ATH_WLAN), true)
 LOCAL_PATH := $(call my-dir)
 DLKM_DIR := build/dlkm
+
+ifeq ($(BOARD_HAS_ATH_WLAN), true)
 
 export BUILD_ATH6KL_VER_32=1
 export HAVE_CFG80211=1
@@ -20,8 +21,6 @@ include $(DLKM_DIR)/AndroidKernelModule.mk
 endif
 
 ifeq ($(BOARD_HAS_ATH_WLAN_AR6004), true)
-LOCAL_PATH := $(call my-dir)
-DLKM_DIR := build/dlkm
 
 export BUILD_ATH6KL_VER_35=1
 export HAVE_CFG80211=1
@@ -43,9 +42,6 @@ endif
 ifeq ($(BOARD_HAS_ATH_ETH_ALX), true)
 
 export BUILD_ATH_ETH_ALX=1
-
-LOCAL_PATH := $(call my-dir)
-DLKM_DIR := build/dlkm
 
 include $(CLEAR_VARS)
 LOCAL_MODULE             := compat.ko

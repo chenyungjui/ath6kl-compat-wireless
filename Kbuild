@@ -1,5 +1,5 @@
 ifeq ($(BUILD_ATH6KL_VER_35), 1)
-obj-m		= wlan.o
+obj-m += wlan.o
 
 wlan-y += drivers/net/wireless/ath/ath6kl-3.5/debug.o
 wlan-y += drivers/net/wireless/ath/ath6kl-3.5/htc_pipe.o
@@ -22,7 +22,7 @@ wlan-y += drivers/net/wireless/ath/ath6kl-3.5/p2p.o
 endif
 
 ifeq ($(BUILD_ATH6KL_VER_32), 1)
-obj-m := wlan.o
+obj-m += wlan.o
 
 wlan-y += drivers/net/wireless/ath/ath6kl/debug.o
 wlan-y += drivers/net/wireless/ath/ath6kl/debugfs_pri.o
@@ -78,7 +78,7 @@ endif
 
 ifeq ($(BUILD_ATH_ETH_ALX), 1)
 
-obj-m := eth.o
+obj-m += eth.o
 eth-y += drivers/net/ethernet/atheros/alx/alx_main.o
 eth-y += drivers/net/ethernet/atheros/alx/alx_ethtool.o
 eth-y += drivers/net/ethernet/atheros/alx/alc_cb.o
