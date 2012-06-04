@@ -1422,7 +1422,8 @@ static int __init ath6kl_sdio_init(void)
 {
 	int ret;
 
-	ath6kl_sdio_init_msm();
+	ath6kl_sdio_init_platform();
+
 	ret = sdio_register_driver(&ath6kl_sdio_driver);
 	if (ret)
 		ath6kl_err("sdio driver registration failed: %d\n", ret);
@@ -1433,8 +1434,7 @@ static int __init ath6kl_sdio_init(void)
 static void __exit ath6kl_sdio_exit(void)
 {
 	sdio_unregister_driver(&ath6kl_sdio_driver);
-	ath6kl_sdio_exit_msm();
-
+	ath6kl_sdio_exit_platform();
 }
 
 module_init(ath6kl_sdio_init);

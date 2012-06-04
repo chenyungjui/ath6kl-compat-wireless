@@ -137,6 +137,10 @@ struct ath6kl_fw_ie {
 	u8 data[0];
 };
 
+enum ath6kl_hw_flags {
+	ATH6KL_HW_FLAG_64BIT_RATES	= BIT(0),
+};
+
 #define ATH6KL_FW_API2_FILE "fw-2.bin"
 #define ATH6KL_FW_API3_FILE "fw-3.bin"
 
@@ -554,7 +558,7 @@ struct ath6kl_vif {
 	struct ath6kl_wep_key wep_key_list[WMI_MAX_KEY_INDEX + 1];
 	struct ath6kl_key keys[WMI_MAX_KEY_INDEX + 1];
 	struct aggr_info *aggr_cntxt;
-	struct ath6kl_htcap htcap;
+	struct ath6kl_htcap htcap[IEEE80211_NUM_BANDS];
 
 	struct timer_list disconnect_timer;
 	struct timer_list sched_scan_timer;
@@ -685,6 +689,7 @@ struct ath6kl {
 		u32 refclk_hz;
 		u32 uarttx_pin;
 		u32 testscript_addr;
+		u32 flags;
 
 		struct ath6kl_hw_fw {
 			const char *dir;
@@ -870,8 +875,8 @@ int ath6kl_init_hw_start(struct ath6kl *ar);
 int ath6kl_init_hw_stop(struct ath6kl *ar);
 void ath6kl_check_wow_status(struct ath6kl *ar, struct sk_buff *skb,
 			     bool is_event_pkt);
-void ath6kl_sdio_init_msm(void);
-void ath6kl_sdio_exit_msm(void);
+void ath6kl_sdio_init_platform(void);
+void ath6kl_sdio_exit_platform(void);
 void ath6kl_mangle_mac_address(struct ath6kl *ar);
 
 #endif /* CORE_H */

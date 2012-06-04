@@ -38,7 +38,7 @@ wlan-y += drivers/net/wireless/ath/ath6kl/txrx.o
 wlan-y += drivers/net/wireless/ath/ath6kl/wmi.o
 wlan-y += drivers/net/wireless/ath/ath6kl/wmi_btcoex.o
 wlan-y += drivers/net/wireless/ath/ath6kl/sdio.o
-wlan-y += drivers/net/wireless/ath/ath6kl/msm.o
+wlan-y += drivers/net/wireless/ath/ath6kl/platform.o
 wlan-y += drivers/net/wireless/ath/ath6kl/softmac.o
 
 wlan-y +=  drivers/net/wireless/ath/ath6kl/testmode.o
