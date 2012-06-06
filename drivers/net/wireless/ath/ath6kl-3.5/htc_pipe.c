@@ -263,7 +263,7 @@ static int htc_issue_packets(struct htc_target *target,
 	u16 payload_len;
 	struct sk_buff *nbuf;
 	struct htc_frame_hdr *htc_hdr;
-	struct htc_packet *packet;
+	struct htc_packet *packet = NULL;
 
 	ath6kl_dbg(ATH6KL_DBG_HTC,
 		   "%s: queue: 0x%lX, pkts %d\n", __func__,
