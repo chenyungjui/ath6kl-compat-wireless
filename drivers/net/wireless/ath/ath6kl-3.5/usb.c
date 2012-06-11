@@ -1592,6 +1592,11 @@ static int ath6kl_usb_bmi_write(struct ath6kl *ar, u8 *buf, u32 len)
 
 static int ath6kl_usb_power_on(struct ath6kl *ar)
 {
+	if (test_bit(USB_REMOTE_WKUP, &ar->flag)) {
+		struct ath6kl_usb *ar_usb = (struct ath6kl_usb *)ar->hif_priv;
+		usb_reset_device(ar_usb->udev);
+	}
+
 	hif_start(ar);
 	return 0;
 }
@@ -1722,6 +1727,47 @@ static void ath6kl_usb_late_resume(struct ath6kl *ar)
 }
 #endif
 
+/* FIXME: revisit a proper place to issue the bus reset*/
+int ath6kl_usb_reconfig(struct ath6kl *ar)
+{
+	int ret = 0;
+	u32 data, addr;
+
+	/* To reenumerate the usb device if host want to enable the 
+	 * usb remote wakeup feature,
+	 * ar6004 hw1.1, hw1.2 and hw1.3 would support this, 
+	 * hw1.6 would enable by default
+	 */
+	if (	!ath6kl_mod_debug_quirks(ar, 
+			ATH6KL_MODULE_ENABLE_USB_REMOTE_WKUP) ) {
+		ret = 0;
+		ath6kl_dbg(ATH6KL_DBG_BOOT, "Disable USB remote wakeup.\n");
+	} else {
+		if (ar->version.target_ver == AR6004_HW_1_3_VERSION) {
+			addr = 0x409754;
+		} else if (ar->version.target_ver == AR6004_HW_1_2_VERSION) {
+			addr = 0x4087d4;
+		} else if (ar->version.target_ver == AR6004_HW_1_1_VERSION) {
+			addr = 0x408304;
+		} else
+			addr = 0;
+
+		if( addr ) {
+			ath6kl_bmi_read(ar, addr, (u8 *)&data, sizeof(unsigned long));
+			data |= (1<<29);
+			ath6kl_bmi_write(ar, addr, (u8 *)&data, sizeof(unsigned long));
+			ret = 1;
+			ath6kl_dbg(ATH6KL_DBG_BOOT, "Enable USB remote wakeup.\n");
+		} else {
+			ret = 0;
+			ath6kl_dbg(ATH6KL_DBG_BOOT, "Hw not supporting USB remote wakeup, disable it.\n");
+		}
+	}
+
+	return ret;
+}
+
+
 static const struct ath6kl_hif_ops ath6kl_usb_ops = {
 	.diag_read32 = ath6kl_usb_diag_read32,
 	.diag_write32 = ath6kl_usb_diag_write32,
@@ -1746,7 +1792,7 @@ static const struct ath6kl_hif_ops ath6kl_usb_ops = {
 	.early_suspend = ath6kl_usb_early_suspend,
 	.late_resume = ath6kl_usb_late_resume,
 #endif
-
+	.bus_config = ath6kl_usb_reconfig,
 };
 
 /* ath6kl usb driver registered functions */

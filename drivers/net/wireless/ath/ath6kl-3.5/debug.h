@@ -28,6 +28,10 @@ enum ATH6KL_MODULE_QUIRKS {
 	ATH6KL_MODULES_ANI_ENABLE       = BIT(5), /* anti-noise-immunity */
 	ATH6KL_MODULE_ENABLE_EPPING		= BIT(6), /* enable endpoing loopback */
 	ATH6KL_MODULE_DISABLE_5G		= BIT(7), /* disable 5G support */
+	ATH6KL_MODULE_P2P_MAX_FW_VIF	= BIT(8), /* enable max. fw vif */
+	ATH6KL_MODULE_P2P_FLOWCTRL	= BIT(9), /* enable p2p flowctrl */
+	ATH6KL_MODULE_ENABLE_USB_REMOTE_WKUP= BIT(10), /* enable usb remote wakeup support */
+	ATH6KL_MODULE_DISABLE_2G_HT40	= BIT(11), /* disable 2.4G HT40 in default */
 };
 
 enum ATH6KL_MODULE_P2P {
@@ -63,7 +67,8 @@ enum ATH6K_DEBUG_MASK {
 	ATH6KL_DBG_WLAN_TX_AMSDU = BIT(24),    /* wlan tx a-msdu */
 	ATH6KL_DBG_POWERSAVE 	= BIT(25),    /* power-saving */
 	ATH6KL_DBG_WOWLAN	= BIT(26),    /* wowlan tracing */
-        ATH6KL_DBG_RTT          = BIT(27),
+	ATH6KL_DBG_RTT          = BIT(27),
+	ATH6KL_DBG_FLOWCTRL     = BIT(28),    /* P2P flowctrl */
 	ATH6KL_DBG_ANY	        = 0xffffffff  /* enable all logs */
 };
 

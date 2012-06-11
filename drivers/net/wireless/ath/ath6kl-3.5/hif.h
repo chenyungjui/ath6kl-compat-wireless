@@ -281,6 +281,7 @@ struct ath6kl_hif_ops {
 	void (*early_suspend)(struct ath6kl *ar);
 	void (*late_resume)(struct ath6kl *ar);
 #endif
+	int (*bus_config)(struct ath6kl *ar);
 
 };
 

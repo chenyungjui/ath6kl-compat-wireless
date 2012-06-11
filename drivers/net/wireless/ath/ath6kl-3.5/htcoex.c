@@ -145,7 +145,7 @@ static void htcoex_scan_start(unsigned long arg)
 		goto resche;
 
 	ret = ath6kl_wmi_startscan_cmd(ar->wmi, vif->fw_vif_idx, WMI_LONG_SCAN,
-				       1, false, 0, 0, 0, NULL);
+				       0, false, 0, 0, 0, NULL);
 	if (ret)
 		ath6kl_err("wmi_startscan_cmd failed\n");
 	else {
@@ -272,6 +272,13 @@ struct htcoex *ath6kl_htcoex_init(struct ath6kl_vif *vif)
 	/* Disable by default. */
 	coex->flags &= ~ATH6KL_HTCOEX_FLAGS_ENABLED;
 	coex->scan_interval = ATH6KL_HTCOEX_SCAN_PERIOD;
+
+	/*
+	 * FIXME : No rate roll-back by default. Host driver need 
+	 *         more information to decide if current AP accept 
+	 *         from HT20 to HT40 under AP current support rates 
+	 *         include HT40.
+	 */
 	coex->rate_rollback_interval = ATH6KL_HTCOEX_RATE_ROLLBACK;
 
 	/* Init. periodic scan timer. */

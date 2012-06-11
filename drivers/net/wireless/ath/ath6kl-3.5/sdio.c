@@ -1184,6 +1184,11 @@ static void ath6kl_sdio_late_resume(struct ath6kl *ar)
 }
 #endif
 
+static int ath6kl_sdio_bus_config(struct ath6kl *ar)
+{
+	return 0;
+}
+
 static const struct ath6kl_hif_ops ath6kl_sdio_ops = {
 	.read_write_sync = ath6kl_sdio_read_write_sync,
 	.write_async = ath6kl_sdio_write_async,
@@ -1210,7 +1215,7 @@ static const struct ath6kl_hif_ops ath6kl_sdio_ops = {
 	.early_suspend = ath6kl_sdio_early_suspend,
 	.late_resume = ath6kl_sdio_late_resume,
 #endif
-	
+	.bus_config = ath6kl_sdio_bus_config,
 };
 
 #if defined(CONFIG_PM_SLEEP) && (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,34))

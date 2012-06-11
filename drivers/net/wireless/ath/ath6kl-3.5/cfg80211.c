@@ -154,6 +154,50 @@ static struct ieee80211_supported_band ath6kl_band_5ghz = {
 	},
 };
 
+/* Max. 3 devices = 1STA + 1P2P-DEVICE + 1P2P-GO|P2P-CLIENT */
+static const struct ieee80211_iface_limit ath6kl_limits_p2p_concurrent3[] = {
+	{
+		.max = 1,
+		.types = BIT(NL80211_IFTYPE_STATION),
+	},
+	{	/* Treat P2P-DEVICE as P2P-CLIENT */
+		.max = 2,
+		.types = BIT(NL80211_IFTYPE_P2P_CLIENT) | 
+				BIT(NL80211_IFTYPE_P2P_GO),
+	},
+};
+
+static const struct ieee80211_iface_combination ath6kl_iface_combinations_p2p_concurrent3[] = {
+	{ 
+		.num_different_channels = 1,
+		.max_interfaces = ATH6KL_VIF_MAX,
+		.limits = ath6kl_limits_p2p_concurrent3,
+		.n_limits = ARRAY_SIZE(ath6kl_limits_p2p_concurrent3),
+	},
+};
+
+/* Max. 4 devices = 1STA + 1P2P-DEVICE + 2P2P-GO|P2P-CLIENT */
+static const struct ieee80211_iface_limit ath6kl_limits_p2p_concurrent4[] = {
+	{
+		.max = 1,
+		.types = BIT(NL80211_IFTYPE_STATION),
+	},
+	{	/* Treat P2P-DEVICE as P2P-CLIENT */
+		.max = 3,
+		.types = BIT(NL80211_IFTYPE_P2P_CLIENT) | 
+				BIT(NL80211_IFTYPE_P2P_GO),
+	},
+};
+
+static const struct ieee80211_iface_combination ath6kl_iface_combinations_p2p_concurrent4[] = {
+	{ 
+		.num_different_channels = 1,
+		.max_interfaces = 4,
+		.limits = ath6kl_limits_p2p_concurrent4,
+		.n_limits = ARRAY_SIZE(ath6kl_limits_p2p_concurrent4),
+	},
+};
+
 #define CCKM_KRK_CIPHER_SUITE 0x004096ff /* use for KRK */
 
 static int ath6kl_set_wpa_version(struct ath6kl_vif *vif,
@@ -1059,8 +1103,9 @@ static int ath6kl_cfg80211_scan(struct wiphy *wiphy, struct net_device *ndev,
 	}
 
 	ret = ath6kl_wmi_startscan_cmd(ar->wmi, vif->fw_vif_idx, WMI_LONG_SCAN,
-				       force_fg_scan, false, 0, 0, n_channels,
-				       channels);
+					force_fg_scan, false, 0, 
+					ATH6KL_FG_SCAN_INTERVAL,
+					n_channels, channels);
 	if (ret)
 		ath6kl_err("wmi_startscan_cmd failed\n");
 	else
@@ -2977,7 +3022,13 @@ static int ath6kl_remain_on_channel(struct wiphy *wiphy,
 		ath6kl_err("busy, couldn't get access\n");
 		return -ERESTARTSYS;
 	}
-
+	
+	if(test_bit(ROC_ONGOING, &vif->flags)){
+		up(&ar->sem);
+		ath6kl_dbg(ATH6KL_DBG_WMI, "%s cancel due to previous command not canceled", __func__);
+		return -EBUSY;
+	}
+	
 	/* TODO: if already pending or ongoing remain-on-channel,
 	 * return -EBUSY */
 	id = ++vif->last_roc_id;
@@ -3104,14 +3155,14 @@ static int ath6kl_mgmt_tx(struct wiphy *wiphy, struct net_device *dev,
 	/* AP mode Power saving processing */
 	if (vif->nw_type == AP_NETWORK) {
 		if (ath6kl_mgmt_powersave_ap(vif, 
-									id, 
-									chan->center_freq, 
-									wait, 
-									buf, 
-									len, 
-									no_cck, 
-									dont_wait_for_ack,
-									&wmi_data_flags)) {
+						id, 
+						chan->center_freq, 
+						wait, 
+						buf, 
+						len, 
+						no_cck, 
+						dont_wait_for_ack,
+						&wmi_data_flags)) {
 			up(&ar->sem);
 			return ret;
 		}
@@ -3348,7 +3399,10 @@ struct ath6kl *ath6kl_core_alloc(struct device *dev)
 	ar->dev = dev;
 
 	if (ar->p2p_concurrent) {
-		ar->vif_max = 4;
+		if (ath6kl_mod_debug_quirks(ar, ATH6KL_MODULE_P2P_MAX_FW_VIF))
+			ar->vif_max = 4;	/* FIXME : get from query. */
+		else
+			ar->vif_max = ATH6KL_VIF_MAX;
 	} else {
 		ar->vif_max = 1;
 	}
@@ -3398,6 +3452,23 @@ int ath6kl_register_ieee80211_hw(struct ath6kl *ar)
 	if (ar->p2p) {
 		wiphy->interface_modes |= BIT(NL80211_IFTYPE_P2P_GO) |
 					  BIT(NL80211_IFTYPE_P2P_CLIENT);
+	}
+
+	/* FIXME : other combinations? */
+	if (ar->p2p_concurrent) {
+		if (ar->vif_max == ATH6KL_VIF_MAX) {
+			wiphy->iface_combinations = 
+					ath6kl_iface_combinations_p2p_concurrent3;
+			wiphy->n_iface_combinations = 
+					ARRAY_SIZE(ath6kl_iface_combinations_p2p_concurrent3);
+		} else if (ar->vif_max == 4) {
+			wiphy->iface_combinations = 
+					ath6kl_iface_combinations_p2p_concurrent4;
+			wiphy->n_iface_combinations = 
+					ARRAY_SIZE(ath6kl_iface_combinations_p2p_concurrent4);
+		} else {
+			WARN_ON(1);
+		}
 	}
 
 	/* max num of ssids that can be probed during scanning */
@@ -3515,11 +3586,11 @@ void ath6kl_deinit_if_data(struct ath6kl_vif *vif)
 #endif
 	
 	for (ctr = 0; ctr < AP_MAX_NUM_STA ; ctr++) {
-		if (!skb_queue_empty(&vif->sta_list[ctr].psq))
-			skb_queue_purge(&vif->sta_list[ctr].psq);
+		if (!ath6kl_ps_queue_empty(&vif->sta_list[ctr].psq_data))
+			ath6kl_ps_queue_purge(&vif->sta_list[ctr].psq_data);
 
-		if (!ath6kl_mgmt_queue_empty(&vif->sta_list[ctr].mgmt_psq))
-			ath6kl_mgmt_queue_purge(&vif->sta_list[ctr].mgmt_psq);
+		if (!ath6kl_ps_queue_empty(&vif->sta_list[ctr].psq_mgmt))
+			ath6kl_ps_queue_purge(&vif->sta_list[ctr].psq_mgmt);
 
 		aggr_module_destroy_conn(vif->sta_list[ctr].aggr_conn_cntxt);	
 	}
@@ -3590,6 +3661,9 @@ struct net_device *ath6kl_interface_add(struct ath6kl *ar, char *name,
 	spin_lock_bh(&ar->list_lock);
 	list_add_tail(&vif->list, &ar->vif_list);
 	spin_unlock_bh(&ar->list_lock);
+
+	/* FIXME : handle return code. */
+	ath6kl_p2p_utils_init_port(vif, type);
 
 	return ndev;
 

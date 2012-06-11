@@ -345,6 +345,13 @@ int ath6kl_wmi_implicit_create_pstream(struct wmi *wmi, u8 if_idx,
 					layer2_priority);
 		} else
 			usr_pri = layer2_priority & 0x7;
+			
+		/*
+		 * Queue the EAPOL frames in the same WMM_AC_VO queue
+		 * as that of management frames.
+		 */
+		if (skb->protocol == cpu_to_be16(ETH_P_PAE))
+			usr_pri = WMI_VOICE_USER_PRIORITY;
 	}
 
 	/*
@@ -741,36 +748,33 @@ static int ath6kl_wmi_p2p_info_event_rx(u8 *datap, int len)
 
 static int ath6kl_wmi_flowctrl_ind_event_rx(u8 *datap, int len, struct ath6kl_vif *vif)
 {
-        struct ath6kl *ar = vif->ar;
-        struct ath6kl_conn_list *pcon;
-        struct wmi_flowctrl_ind_event *ev;
-        u8 num_of_conn;
-        u8 i;
+	struct ath6kl *ar = vif->ar;
+	struct wmi_flowctrl_ind_event *ev;
 
 	/* 
 	 * FIXME : Bypass this event if only one interface be used to 
 	 *         avoid uncessary code processing if STA enter PS mode. 
 	 */
-	if (ar->vif_max == 1)
+	if ((!(ar->conf_flags & ATH6KL_CONF_ENABLE_FLOWCTRL)) ||
+	    (ar->vif_max == 1))
 		return 0;
 
-        if (len < sizeof(*ev))
-                return -EINVAL;
+	if (len < sizeof(*ev))
+		return -EINVAL;
 
-        ev = (struct wmi_flowctrl_ind_event *) datap;
-        num_of_conn  = ev->num_of_conn;
-        for (i=0; i<NUM_CONN; i++) {
-            pcon = &ar->conn_list[i];
-            pcon->connect_status = ev->ac_map[i];
-	}
+	ev = (struct wmi_flowctrl_ind_event *) datap;
 
-        ath6kl_dbg(ATH6KL_DBG_WMI, "flowctrl_info: num_of_conn=%d ac_map[0]=0x%x ac_map[1]=0x%x ac_map[2]=0x%x\n", 
-			num_of_conn, ev->ac_map[0], ev->ac_map[1], ev->ac_map[2]);
+	ath6kl_dbg(ATH6KL_DBG_WMI, "flowctrl_info: num_of_conn=%d ac_map[0]=0x%x ac_map[1]=0x%x ac_map[2]=0x%x\n", 
+			ev->num_of_conn, ev->ac_map[0], ev->ac_map[1], ev->ac_map[2]);
 
-        ath6kl_flowctrl_change(vif);
-        ath6kl_tx_scheduler(vif);
+	ath6kl_p2p_flowctrl_state_update(ar, 
+					 ev->num_of_conn,
+					 ev->ac_map,
+					 ev->ac_queue_depth);
+	ath6kl_p2p_flowctrl_state_change(ar);
+	ath6kl_p2p_flowctrl_tx_schedule(ar);
 
-        return 0;
+	return 0;
 }
 
 inline struct sk_buff *ath6kl_wmi_get_new_buf(u32 size)
@@ -935,7 +939,9 @@ static int ath6kl_wmi_connect_event_rx(struct wmi *wmi, u8 *datap, int len,
 				   "(AP started)\n",
 				   __func__, le16_to_cpu(ev->u.ap_bss.ch),
 				   ev->u.ap_bss.bssid);
-                        vif->connid = ev->u.ap_bss.aid;
+			ath6kl_p2p_flowctrl_set_conn_id(vif, 
+							ev->u.ap_bss.bssid, 
+							ev->u.ap_bss.aid);
 			ath6kl_connect_ap_mode_bss(
 				vif, le16_to_cpu(ev->u.ap_bss.ch));
 		} else {
@@ -948,7 +954,9 @@ static int ath6kl_wmi_connect_event_rx(struct wmi *wmi, u8 *datap, int len,
 				   ev->u.ap_sta.keymgmt,
 				   le16_to_cpu(ev->u.ap_sta.cipher),
 				   ev->u.ap_sta.apsd_info);
-                        vif->connid = ev->u.ap_sta.aid;
+			ath6kl_p2p_flowctrl_set_conn_id(vif, 
+							ev->u.ap_sta.mac_addr,
+							ev->u.ap_sta.aid);
 			ath6kl_connect_ap_mode_sta(
 				vif, ev->u.ap_sta.aid, ev->u.ap_sta.mac_addr,
 				ev->u.ap_sta.keymgmt,
@@ -995,7 +1003,9 @@ static int ath6kl_wmi_connect_event_rx(struct wmi *wmi, u8 *datap, int len,
 
 		pie += pie[1] + 2;
 	}
-        vif->connid = ev->u.sta.aid;
+	ath6kl_p2p_flowctrl_set_conn_id(vif, 
+					vif->ndev->dev_addr,
+					ev->u.sta.aid);
 
 	ath6kl_connect_event(vif, le16_to_cpu(ev->u.sta.ch),
 			     ev->u.sta.bssid,
@@ -2664,7 +2674,7 @@ static int ath6kl_wmi_host_sleep_mode_cmd_prcd_evt_rx(struct wmi *wmi,
 						      struct ath6kl_vif *vif)
 {
 	struct ath6kl *ar = wmi->parent_dev;
-	
+
 	set_bit(HOST_SLEEP_MODE_CMD_PROCESSED, &vif->flags);
 	wake_up(&ar->event_wq);
 	
@@ -3489,6 +3499,49 @@ static int ath6kl_wmi_oppps_info_event_rx(struct ath6kl_vif *vif, u8 *datap, int
 	return 0;
 }
 
+static int ath6kl_wmi_port_status_event_rx(struct ath6kl_vif *vif, u8 *datap, int len)
+{
+	struct wmi_port_status *ev;
+
+	if (len < sizeof(*ev))
+		return -EINVAL;
+
+	ev = (struct wmi_port_status *) datap;
+
+
+	ath6kl_dbg(ATH6KL_DBG_WMI, "wmi event port_status, port_id %d status %d vif->fw_vif_idx %d\n", 
+					ev->port_id, ev->status, vif->fw_vif_idx);
+
+	if ((ev->status == ADD_PORT_FAIL) ||
+	    (ev->status == DEL_PORT_FAIL)) {
+	    ath6kl_err("Add_port/Del_port error.\n");
+	}
+
+	ath6kl_p2p_utils_check_port(vif, ev->port_id);
+
+	return 0;
+}
+
+
+static int ath6kl_wmi_wow_ext_wake_event(struct wmi *wmi, u8 *datap,
+					int len)
+{
+	struct wmi_wow_event_wake_event *ev;
+
+	if (len < sizeof(*ev))
+		return -EINVAL;
+
+	ev = (struct wmi_wow_event_wake_event*) datap;
+
+	ath6kl_dbg(ATH6KL_DBG_WOWLAN, "-- wakeup-event --\n");
+	ath6kl_dbg(ATH6KL_DBG_WOWLAN, "    flag: %d\n", ev->flags);
+	ath6kl_dbg(ATH6KL_DBG_WOWLAN, "    type: %d\n", ev->type);
+	ath6kl_dbg(ATH6KL_DBG_WOWLAN, "   value: %d\n", ev->value);
+	ath6kl_dbg(ATH6KL_DBG_WOWLAN, " pkt_len: %d\n", ev->packet_length);
+
+	return 0;
+}
+
 /* Control Path */
 int ath6kl_wmi_control_rx(struct wmi *wmi, struct sk_buff *skb)
 {
@@ -3758,12 +3811,20 @@ int ath6kl_wmi_control_rx(struct wmi *wmi, struct sk_buff *skb)
 		ath6kl_dbg(ATH6KL_DBG_WMI, "WMI_OPPPS_INFO_EVENTID\n");
 		ret = ath6kl_wmi_oppps_info_event_rx(vif, datap, len);
 		break;
+	case WMI_PORT_STATUS_EVENTID:
+		ath6kl_dbg(ATH6KL_DBG_WMI, "WMI_PORT_STATUS_EVENTID\n");
+		ret = ath6kl_wmi_port_status_event_rx(vif, datap, len);
+		break;
 #ifdef ATH6KL_DIAGNOSTIC
 	case WMI_DIAGNOSTIC_EVENTID:
 		ath6kl_dbg(ATH6KL_DBG_WMI, "WMI_DIAGNOSTIC_EVENTID\n");
 		ret = ath6kl_wmi_diag_event(vif, wmi, skb);
 		break;
 #endif
+	case WMI_WOW_EXT_WAKE_EVENTID:
+		ath6kl_dbg(ATH6KL_DBG_WMI, "WMI_WOW_EXT_WAKE_EVENTID\n");
+		ret = ath6kl_wmi_wow_ext_wake_event(wmi, datap, len);
+		break;
 	default:
 		ath6kl_dbg(ATH6KL_DBG_WMI, "unknown cmd id 0x%x\n", id);
 		ret = -EINVAL;
@@ -3967,8 +4028,8 @@ int ath6kl_wmi_abort_scan_cmd(struct wmi *wmi, u8 if_idx)
 	return ath6kl_wmi_simple_cmd(wmi, if_idx, WMI_ABORT_SCAN_CMDID);
 }
 
-int ath6kl_wmi_set_ht_cap_cmd(struct wmi *wmi,
-	u8 band, u8 chan_width_40M_supported, u8 short_GI)
+int ath6kl_wmi_set_ht_cap_cmd(struct wmi *wmi, u8 if_idx,
+	u8 band, u8 chan_width_40M_supported, u8 short_GI, u8 intolerance_40MHz)
 {
 	int ret = 0;
 	struct sk_buff *skb;
@@ -3983,8 +4044,10 @@ int ath6kl_wmi_set_ht_cap_cmd(struct wmi *wmi,
 	if (!skb)
 		return -ENOMEM;
 
-	ath6kl_dbg(ATH6KL_DBG_WMI, "set_ht_cap_cmd: band=%d chan_width_40M_supported=%d short_GI=%d\n",
-		   band, chan_width_40M_supported, short_GI);
+	ath6kl_dbg(ATH6KL_DBG_WMI, 
+		   "set_ht_cap_cmd: if_idx=%d band=%d chan_width_40M_supported=%d short_GI=%d intolerance_40MHz=%d\n",
+		   if_idx,
+		   band, chan_width_40M_supported, short_GI, intolerance_40MHz);
 
 	cmd = (struct wmi_set_ht_cap *) skb->data;
 	cmd->band = band;
@@ -3992,10 +4055,10 @@ int ath6kl_wmi_set_ht_cap_cmd(struct wmi *wmi,
 	cmd->chan_width_40M_supported = chan_width_40M_supported;
 	cmd->short_GI_20MHz = short_GI;
 	cmd->short_GI_40MHz = short_GI;
-	cmd->intolerance_40MHz = 1;
-	cmd->max_ampdu_len_exp = 2;	/* TBD : 32K for 2 chain, 16K for 1 chain */
+	cmd->intolerance_40MHz = intolerance_40MHz;
+	cmd->max_ampdu_len_exp = 2;	/* FIXME : 32K for 2 chain, 16K for 1 chain */
 
-	ret = ath6kl_wmi_cmd_send(wmi, 0, skb, WMI_SET_HT_CAP_CMDID,
+	ret = ath6kl_wmi_cmd_send(wmi, if_idx, skb, WMI_SET_HT_CAP_CMDID,
 				   NO_SYNC_WMIFLAG);
 
 	return ret;
@@ -4258,6 +4321,49 @@ int ath6kl_wmi_set_fix_rates(struct wmi *wmi, u8 if_idx, u64 mask)
 			cmd->fixRateMask[0], cmd->fixRateMask[1]);
 
 	return ath6kl_wmi_cmd_send(wmi, if_idx, skb, WMI_SET_FIXRATES_CMDID,
+				NO_SYNC_WMIFLAG);
+}
+
+int ath6kl_wmi_add_port_cmd(struct wmi *wmi,  struct ath6kl_vif *vif, u8 opmode, u8 subopmode)
+{
+	struct sk_buff *skb;
+	struct wmi_add_port_cmd *cmd;
+
+	skb = ath6kl_wmi_get_new_buf(sizeof(*cmd));
+	if (!skb)
+		return -ENOMEM;
+	
+	cmd = (struct wmi_add_port_cmd *)skb->data;
+	cmd->port_id = 0;
+	cmd->port_opmode = opmode;
+	cmd->port_subopmode = subopmode;
+	/* Use MAC selection to find FW's device index. */
+	memcpy(cmd->mac_addr, &vif->ndev->dev_addr[0], ETH_ALEN);	
+	
+	ath6kl_dbg(ATH6KL_DBG_WMI, "add_port: if_idx %d opmode %d subopmode %d\n",
+				vif->fw_vif_idx,
+				opmode, subopmode);
+
+	return ath6kl_wmi_cmd_send(wmi, vif->fw_vif_idx, skb, WMI_ADD_PORT_CMDID,
+				NO_SYNC_WMIFLAG);
+}
+
+int ath6kl_wmi_del_port_cmd(struct wmi *wmi, u8 if_idx, u8 port_id)
+{
+	struct sk_buff *skb;
+	struct wmi_del_port_cmd *cmd;
+
+	skb = ath6kl_wmi_get_new_buf(sizeof(*cmd));
+	if (!skb)
+		return -ENOMEM;
+	
+	cmd = (struct wmi_del_port_cmd *)skb->data;
+	cmd->port_id = port_id;
+	
+	ath6kl_dbg(ATH6KL_DBG_WMI, "del_port: if_idx %d port_id %d\n",
+				if_idx, port_id);
+
+	return ath6kl_wmi_cmd_send(wmi, if_idx, skb, WMI_DEL_PORT_CMDID,
 				NO_SYNC_WMIFLAG);
 }
 

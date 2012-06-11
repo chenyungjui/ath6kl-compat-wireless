@@ -476,13 +476,22 @@ void ath6kl_init_control_info(struct ath6kl_vif *vif)
 	/* Init the PS queues */
 	for (ctr = 0; ctr < AP_MAX_NUM_STA; ctr++) {
 		spin_lock_init(&vif->sta_list[ctr].lock);
-		skb_queue_head_init(&vif->sta_list[ctr].psq);
-		ath6kl_mgmt_queue_init(&vif->sta_list[ctr].mgmt_psq);
+		ath6kl_ps_queue_init(&vif->sta_list[ctr].psq_data,
+					PS_QUEUE_TYPE_STA_UNICAST,
+					ATH6KL_PS_QUEUE_MAX_AGE,
+					ATH6KL_PS_QUEUE_MAX_DEPTH);
+		ath6kl_ps_queue_init(&vif->sta_list[ctr].psq_mgmt,
+					PS_QUEUE_TYPE_STA_MGMT,
+					ATH6KL_PS_QUEUE_MAX_AGE,
+					ATH6KL_PS_QUEUE_NO_DEPTH);
 		vif->sta_list[ctr].aggr_conn_cntxt = NULL;
 	}
 
-	spin_lock_init(&vif->mcastpsq_lock);
-	skb_queue_head_init(&vif->mcastpsq);
+	spin_lock_init(&vif->psq_mcast_lock);
+	ath6kl_ps_queue_init(&vif->psq_mcast,
+				PS_QUEUE_TYPE_AP_MULTICAST,
+				ATH6KL_PS_QUEUE_NO_AGE,
+				ATH6KL_PS_QUEUE_NO_DEPTH);
 
 	memcpy(vif->ap_country_code, DEF_AP_COUNTRY_CODE, 3);
 
@@ -617,6 +626,25 @@ static int ath6kl_target_config_wlan_params(struct ath6kl *ar, int idx)
 		if (ret) {
 			ath6kl_dbg(ATH6KL_DBG_TRC, "failed to enable Probe "
 				   "Request reporting (%d)\n", ret);
+		}
+	}
+
+	if (!ath6kl_mod_debug_quirks(ar, ATH6KL_MODULE_DISABLE_2G_HT40)) {
+		/*
+		 * Don't allow HT40 in 2.4Ghz for P2P related inerfaces
+		 * in current design.
+		 */
+		if ((((ar->vif_max == 1) && (!ar->p2p)) ||
+		     (ar->vif_max > 1)) &&
+		    (idx == ATH6KL_24GHZ_HT40_DEF_STA_IDX)) {
+			if (ath6kl_wmi_set_ht_cap_cmd(ar->wmi, ATH6KL_24GHZ_HT40_DEF_STA_IDX,
+							A_BAND_24GHZ, 
+							ATH6KL_24GHZ_HT40_DEF_WIDTH,
+							ATH6KL_24GHZ_HT40_DEF_SGI,
+							ATH6KL_24GHZ_HT40_DEF_INTOLR40)) {
+				ath6kl_err("unable to set HT CAP\n");
+				status = -EIO;
+			}
 		}
 	}
 
@@ -784,6 +812,8 @@ void ath6kl_core_cleanup(struct ath6kl *ar)
 	ath6kl_bmi_cleanup(ar);
 
 	ath6kl_debug_cleanup(ar);
+
+	ath6kl_p2p_flowctrl_conn_list_deinit(ar);
 
 	kfree(ar->fw_board);
 	kfree(ar->fw_otp);
@@ -1710,7 +1740,8 @@ static int ath6kl_init_upload(struct ath6kl *ar)
 
 		/* change the byte order */
 		param = le32_to_cpu(param);
-		param |= HI_PWR_SAVE_LPL_ENABLED;
+		param |= HI_PWR_SAVE_LPL_ENABLED | 
+			(HI_PWR_SAVE_LPL_MODE_RPL<<HI_PWR_SAVE_LPL_MODE_LSB);
 		param = cpu_to_le32(param);
 
 		status = ath6kl_bmi_write(ar,
@@ -1901,6 +1932,14 @@ int ath6kl_init_hw_start(struct ath6kl *ar)
 	int ret, i;
 
 	ath6kl_dbg(ATH6KL_DBG_BOOT, "hw start\n");
+
+	if ( (ar->hif_type == ATH6KL_HIF_TYPE_USB) && 
+		ath6kl_hif_bus_config(ar) ) {
+			set_bit(USB_REMOTE_WKUP, &ar->flag);
+	}
+	else {
+		clear_bit(USB_REMOTE_WKUP, &ar->flag);
+	}
 
 	ret = ath6kl_hif_power_on(ar);
 	if (ret)
@@ -2183,7 +2222,13 @@ int ath6kl_core_init(struct ath6kl *ar)
 	ar->conf_flags = ATH6KL_CONF_IGNORE_ERP_BARKER |
 			 ATH6KL_CONF_ENABLE_11N | ATH6KL_CONF_ENABLE_TX_BURST;
 
-        ath6kl_conn_list_init(ar);
+	/* FIXME : handle error code */
+	ar->p2p_flowctrl_ctx = ath6kl_p2p_flowctrl_conn_list_init(ar);
+	if (ath6kl_mod_debug_quirks(ar, ATH6KL_MODULE_P2P_FLOWCTRL))
+		ar->conf_flags |= ATH6KL_CONF_ENABLE_FLOWCTRL;
+	else {
+		ath6kl_info("ath6kl : disable P2P flowctrl \n");
+	}
 
 	if (ath6kl_mod_debug_quirks(ar, ATH6KL_MODULE_SUSPEND_CUTPOWER))
 		ar->conf_flags |= ATH6KL_CONF_SUSPEND_CUTPOWER;

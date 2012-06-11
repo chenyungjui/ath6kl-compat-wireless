@@ -19,7 +19,7 @@
 
 #define ATH6KL_HTCOEX_SCAN_PERIOD			(30 * 1000)	/* in ms */
 
-#define ATH6KL_HTCOEX_RATE_ROLLBACK			(10) /* in scan cycle */
+#define ATH6KL_HTCOEX_RATE_ROLLBACK			(0) 		/* in scan cycle */
 
 #define ATH6KL_HTCOEX_FLAGS_ENABLED			BIT(0)		/* htcoex enable/disable */
 #define ATH6KL_HTCOEX_FLAGS_START			BIT(1)		/* htcoex start/stop */

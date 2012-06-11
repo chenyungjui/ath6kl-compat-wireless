@@ -101,7 +101,7 @@ static void ath6kl_add_new_sta(struct ath6kl_vif *vif, u8 *mac, u16 aid, u8 *wpa
 	sta->apsd_info = apsd_info;
 	sta->vif = vif;
 	init_timer(&sta->psq_age_timer);
-	sta->psq_age_timer.function = ath6kl_psq_age_handler;
+	sta->psq_age_timer.function = ath6kl_ps_queue_age_handler;
 	sta->psq_age_timer.data = (unsigned long)sta;
 	aggr_reset_state(sta->aggr_conn_cntxt);
 
@@ -120,8 +120,8 @@ static void ath6kl_sta_cleanup(struct ath6kl_vif *vif, u8 i)
 	sta->vif = NULL;
 
 	/* empty the queued pkts in the PS queue if any */
-	skb_queue_purge(&sta->psq);
-	ath6kl_mgmt_queue_purge(&sta->mgmt_psq);
+	ath6kl_ps_queue_purge(&sta->psq_data);
+	ath6kl_ps_queue_purge(&sta->psq_mgmt);
 
 	memset(&vif->ap_stats.sta[sta->aid - 1], 0,
 	       sizeof(struct wmi_per_sta_stat));
@@ -167,188 +167,327 @@ static u8 ath6kl_remove_sta(struct ath6kl_vif *vif, u8 *mac, u16 reason)
 	return removed;
 }
 
-void ath6kl_mgmt_queue_init(struct ath6kl_mgmt_buf_head *psq)
+void ath6kl_ps_queue_init(struct ath6kl_ps_buf_head *psq,
+			enum ps_queue_type queue_type,
+			u32 age_cycle,
+			u32 max_depth)
 {
 	INIT_LIST_HEAD(&psq->list);
-	psq->len = 0;
+	psq->queue_type = queue_type;
+	psq->age_cycle = age_cycle;
+	psq->max_depth = max_depth;
+	
+	psq->depth = 0;
+	psq->enqueued = 0;
+	psq->enqueued_err = 0;
+	psq->dequeued = 0;
+	psq->aged = 0;
 	spin_lock_init(&psq->lock);
+
+	ath6kl_dbg(ATH6KL_DBG_POWERSAVE, 
+			"ps: init psq %p age_cycle %d \n",
+			psq,
+			psq->age_cycle);
+
+	return;
 }
 
-void ath6kl_mgmt_queue_purge(struct ath6kl_mgmt_buf_head *psq)
+void ath6kl_ps_queue_purge(struct ath6kl_ps_buf_head *psq)
 {
 	unsigned long flags;
-	struct ath6kl_mgmt_buf_head *mgmt_buf, *mgmt_n;
+	struct ath6kl_ps_buf_desc *ps_buf, *ps_buf_n;
+
+	ath6kl_dbg(ATH6KL_DBG_POWERSAVE, 
+			"ps: purge psq %p depth %d\n",
+			psq,
+			psq->depth);
+
+	WARN_ON(psq->depth < 0);
 
 	spin_lock_irqsave(&psq->lock, flags);
-	if (psq->len <= 0) {
+	if (psq->depth == 0) {
 		spin_unlock_irqrestore(&psq->lock, flags);
 		return;
 	}
-	list_for_each_entry_safe(mgmt_buf, mgmt_n, &psq->list, list) {
-		kfree(mgmt_buf);
+	list_for_each_entry_safe(ps_buf, ps_buf_n, &psq->list, list) {
+		list_del(&ps_buf->list);
+		if (ps_buf->skb)
+			dev_kfree_skb(ps_buf->skb);
+		kfree(ps_buf);
+		psq->depth--;
+		psq->dequeued++;
 	}
-	psq->len = 0;
+
+	WARN_ON(psq->depth != 0);
+	WARN_ON(psq->enqueued != psq->dequeued);
+
+	/* call ath6kl_ps_queue_init() instead? */
+	psq->depth = 0;
+	psq->enqueued = 0;
+	psq->enqueued_err = 0;
+	psq->dequeued = 0;
+	psq->aged = 0;
+
 	spin_unlock_irqrestore(&psq->lock, flags);
+
+	return;
 }
 
-int ath6kl_mgmt_queue_empty(struct ath6kl_mgmt_buf_head *psq)
+int ath6kl_ps_queue_empty(struct ath6kl_ps_buf_head *psq)
 {
 	unsigned long flags;
 	int empty;
 
+	WARN_ON(psq->depth < 0);
+
 	spin_lock_irqsave(&psq->lock, flags);
-	empty = (psq->len == 0);
+	empty = (psq->depth == 0);
 	spin_unlock_irqrestore(&psq->lock, flags);
 
 	return empty;
 }
 
-int ath6kl_mgmt_queue_tail(struct ath6kl_mgmt_buf_head *psq, 
-								const u8 *buf, 
-								u16 len, 
-								u32 id, 
-								u32 freq, 
-								u32 wait, 
-								bool no_cck, 
-								bool dont_wait_for_ack)
+int ath6kl_ps_queue_depth(struct ath6kl_ps_buf_head *psq)
 {
 	unsigned long flags;
-	struct ath6kl_mgmt_buf* mgmt_buf;
+	int depth;
+
+	WARN_ON(psq->depth < 0);
+
+	spin_lock_irqsave(&psq->lock, flags);
+	depth = psq->depth;
+	spin_unlock_irqrestore(&psq->lock, flags);
+
+	return depth;
+}
+
+void ath6kl_ps_queue_stat(struct ath6kl_ps_buf_head *psq, 
+			 int *depth, 
+			 u32 *enqueued, 
+			 u32 *enqueued_err, 
+			 u32 *dequeued,
+			 u32 *aged)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&psq->lock, flags);
+	*depth = psq->depth;
+	*enqueued = psq->enqueued;
+	*enqueued_err = psq->enqueued_err;
+	*dequeued = psq->dequeued;
+	*aged = psq->aged;
+	spin_unlock_irqrestore(&psq->lock, flags);
+
+	ath6kl_dbg(ATH6KL_DBG_POWERSAVE, 
+			"ps: stat psq %p depth %d enqueued %d enqueued_err %d dequeued %d aged %d\n",
+			psq,
+			*depth,
+			*enqueued,
+			*enqueued_err,
+			*dequeued,
+			*aged);
+	
+	return;
+}
+			 
+struct ath6kl_ps_buf_desc* ath6kl_ps_queue_dequeue(struct ath6kl_ps_buf_head *psq)
+{
+	unsigned long flags;
+	struct ath6kl_ps_buf_desc *ps_buf;
+
+	ath6kl_dbg(ATH6KL_DBG_POWERSAVE, 
+			"ps: dequeue psq %p depth %d\n",
+			psq,
+			psq->depth);
+
+	WARN_ON(psq->depth < 0);
+
+	spin_lock_irqsave(&psq->lock, flags);
+	if (psq->depth == 0) {
+		spin_unlock_irqrestore(&psq->lock, flags);
+		return NULL;
+	}
+
+	ps_buf = list_first_entry(&psq->list, struct ath6kl_ps_buf_desc, list);
+	list_del(&ps_buf->list);
+	psq->depth--;
+	psq->dequeued++;
+	spin_unlock_irqrestore(&psq->lock, flags);
+
+	return ps_buf;
+}
+
+int ath6kl_ps_queue_enqueue_mgmt(struct ath6kl_ps_buf_head *psq, 
+				const u8 *buf, 
+				u16 len, 
+				u32 id, 
+				u32 freq, 
+				u32 wait, 
+				bool no_cck, 
+				bool dont_wait_for_ack)
+{
+	unsigned long flags;
+	struct ath6kl_ps_buf_desc *ps_buf;
 	int mgmt_buf_size;
 
-	mgmt_buf_size = len + sizeof(struct ath6kl_mgmt_buf) - 1;
-	mgmt_buf = kmalloc(mgmt_buf_size, GFP_KERNEL);
-	if (!mgmt_buf)
-		return -ENOMEM;
+	ath6kl_dbg(ATH6KL_DBG_POWERSAVE, 
+			"ps: enqueue_mgmt psq %p depth %d buf %p\n",
+			psq,
+			psq->depth,
+			buf);
+
+	if ((psq->max_depth != ATH6KL_PS_QUEUE_NO_DEPTH) &&
+	    (psq->depth > psq->max_depth)) {
+		/* FIXME : do something */
+		psq->enqueued_err++;
+		return -EBUSY;
+	}
+
+	mgmt_buf_size = len + sizeof(struct ath6kl_ps_buf_desc) - 1;
+	ps_buf = kmalloc(mgmt_buf_size, GFP_KERNEL);
+	if (!ps_buf) {
+		psq->enqueued_err++;
+		return -ENOMEM;	
+	}
 	
-	INIT_LIST_HEAD(&mgmt_buf->list);
-	mgmt_buf->id = id;
-	mgmt_buf->freq = freq;
-	mgmt_buf->wait = wait;
-	mgmt_buf->no_cck = no_cck;
-	mgmt_buf->dont_wait_for_ack = dont_wait_for_ack;
-	mgmt_buf->len = len;
-	mgmt_buf->age = 0;
-	memcpy(mgmt_buf->buf, buf, len);
+	INIT_LIST_HEAD(&ps_buf->list);
+	ps_buf->id = id;
+	ps_buf->freq = freq;
+	ps_buf->wait = wait;
+	ps_buf->no_cck = no_cck;
+	ps_buf->dont_wait_for_ack = dont_wait_for_ack;
+	ps_buf->len = len;
+	ps_buf->age = 0;
+	ps_buf->skb = NULL;
+	memcpy(ps_buf->buf, buf, len);
 	
 	spin_lock_irqsave(&psq->lock, flags);
-	list_add_tail(&mgmt_buf->list, &psq->list);
-	psq->len++;
+	list_add_tail(&ps_buf->list, &psq->list);
+	psq->depth++;
+	psq->enqueued++;
 	spin_unlock_irqrestore(&psq->lock, flags);
 
 	return 0;
 }
 
-struct ath6kl_mgmt_buf* ath6kl_mgmt_dequeue_head(struct ath6kl_mgmt_buf_head *psq)
+int ath6kl_ps_queue_enqueue_data(struct ath6kl_ps_buf_head *psq, 
+				struct sk_buff *skb)
 {
 	unsigned long flags;
-	struct ath6kl_mgmt_buf *mgmt_buf;
-	
-	spin_lock_irqsave(&psq->lock, flags);
-	if (psq->len == 0) {
-		spin_unlock_irqrestore(&psq->lock, flags);
-		return NULL;
+	struct ath6kl_ps_buf_desc *ps_buf;
+	int data_buf_size;
+
+	ath6kl_dbg(ATH6KL_DBG_POWERSAVE, 
+			"ps: enqueue_data psq %p depth %d skb %p\n",
+			psq,
+			psq->depth,
+			skb);
+
+	if((psq->max_depth != ATH6KL_PS_QUEUE_NO_DEPTH) &&
+	   (psq->depth > psq->max_depth)) {
+		/* FIXME : do something */
+		psq->enqueued_err++;
+		return -EBUSY;
 	}
-	
-	mgmt_buf = list_first_entry(&psq->list, struct ath6kl_mgmt_buf, list);
-	list_del(&mgmt_buf->list);
-	psq->len--;
+
+	data_buf_size = sizeof(struct ath6kl_ps_buf_desc);
+	ps_buf = kmalloc(data_buf_size, GFP_KERNEL);
+	if (!ps_buf) {
+		psq->enqueued_err++;
+		return -ENOMEM;	
+	}
+	INIT_LIST_HEAD(&ps_buf->list);
+	ps_buf->age = 0;
+	ps_buf->skb = skb;
+	ps_buf->len = skb->len;
+
+	spin_lock_irqsave(&psq->lock, flags);
+	list_add_tail(&ps_buf->list, &psq->list);
+	psq->depth++;
+	psq->enqueued++;
 	spin_unlock_irqrestore(&psq->lock, flags);
 
-	return mgmt_buf;
+	return 0;
 }
 
-static void ath6kl_data_psq_aging(struct ath6kl_sta *conn)
+static int ath6kl_ps_queue_aging(struct ath6kl_ps_buf_head *psq)
 {
-	struct sk_buff* skb;
-	struct sk_buff* skb_n = NULL;
-	u32 age;
-	bool last = false;
-
-	if (skb_queue_empty(&conn->psq))
-		return;
-
-	skb = skb_peek(&conn->psq);
-	do {
-		if (skb_queue_is_last(&conn->psq, skb))
-			last = true;
-		else
-			skb_n = skb_queue_next(&conn->psq, skb);
-
-		age = ath6kl_data_get_age(skb);
-		age++;
-		if (age >= ATH6KL_PSQ_MAX_AGE) {
-			skb_unlink(skb, &conn->psq);
-			kfree_skb(skb);
-		} else
-			ath6kl_data_set_age(skb, age);
-
-		if (last)
-			break;
-		else
-			skb = skb_n;		
-	} while (1);
-
-	if (ath6kl_mgmt_queue_empty(&conn->mgmt_psq) && 
-		skb_queue_empty(&conn->psq)) {
-		struct ath6kl_vif *vif = conn->vif;
-
-		ath6kl_wmi_set_pvb_cmd(vif->ar->wmi, vif->fw_vif_idx, conn->aid, 0);
-	}
-}
-
-static void ath6kl_mgmt_psq_aging(struct ath6kl_sta *conn)
-{
-	struct ath6kl_mgmt_buf* mgmt_buf, *mgmt_n;
+	struct ath6kl_ps_buf_desc* ps_buf, *ps_buf_n;
 	unsigned long flags;
 	u32 age;	
-	int is_empty;
+	int is_empty = 1;
 
-	spin_lock_irqsave(&conn->mgmt_psq.lock, flags);
-	if (conn->mgmt_psq.len == 0) {
-		spin_unlock_irqrestore(&conn->mgmt_psq.lock, flags);
-		return;
+	spin_lock_irqsave(&psq->lock, flags);
+	if (psq->depth == 0) {
+		spin_unlock_irqrestore(&psq->lock, flags);
+		return is_empty;
 	}
-	list_for_each_entry_safe(mgmt_buf, mgmt_n, &conn->mgmt_psq.list, list) {
-		age = ath6kl_mgmt_get_age(mgmt_buf);
+	list_for_each_entry_safe(ps_buf, ps_buf_n, &psq->list, list) {
+		age = ath6kl_ps_queue_get_age(ps_buf);
 		age++;
-		if (age >= ATH6KL_PSQ_MAX_AGE) {
-			list_del(&mgmt_buf->list);
-			kfree(mgmt_buf);
-			conn->mgmt_psq.len--;
+		if ((psq->age_cycle != ATH6KL_PS_QUEUE_NO_AGE) &&
+		    (age >= psq->age_cycle)) {
+			list_del(&ps_buf->list);
+			if (ps_buf->skb)
+				dev_kfree_skb(ps_buf->skb);
+			kfree(ps_buf);
+
+			psq->aged++;
+			psq->dequeued++;
+			psq->depth--;
 		} else
-			ath6kl_mgmt_set_age(mgmt_buf, age);
+			ath6kl_ps_queue_set_age(ps_buf, age);
 	}
-	is_empty = (conn->mgmt_psq.len == 0) && skb_queue_empty(&conn->psq);
-	spin_unlock_irqrestore(&conn->mgmt_psq.lock, flags);
+	is_empty = (psq->depth == 0);
+	spin_unlock_irqrestore(&psq->lock, flags);
 
-	if (is_empty) {
-		struct ath6kl_vif *vif = conn->vif;
+	ath6kl_dbg(ATH6KL_DBG_POWERSAVE, 
+			"ps: aging psq %p depth %d aged %d\n",
+			psq,
+			psq->depth,
+			psq->aged);
 
-		ath6kl_wmi_set_pvb_cmd(vif->ar->wmi, vif->fw_vif_idx, conn->aid, 0);
-	}
+	return is_empty;
 }
 
-void ath6kl_psq_age_handler(unsigned long ptr)
+void ath6kl_ps_queue_age_handler(unsigned long ptr)
 {
 	struct ath6kl_sta *conn = (struct ath6kl_sta*)ptr;
-
+	struct ath6kl_vif *vif = conn->vif;
+		
 	spin_lock_bh(&conn->lock);
-	ath6kl_data_psq_aging(conn);
-	ath6kl_mgmt_psq_aging(conn);
+	if (ath6kl_ps_queue_aging(&conn->psq_data) &&
+	    ath6kl_ps_queue_aging(&conn->psq_mgmt))
+		ath6kl_wmi_set_pvb_cmd(vif->ar->wmi, vif->fw_vif_idx, conn->aid, 0);
 	spin_unlock_bh(&conn->lock);
 
-	mod_timer(&conn->psq_age_timer, jiffies + msecs_to_jiffies(ATH6KL_PSQ_CHECK_AGE));
+	mod_timer(&conn->psq_age_timer, jiffies + msecs_to_jiffies(ATH6KL_PS_QUEUE_CHECK_AGE));
+
+	return;
 }
 
-void ath6kl_psq_age_start(struct ath6kl_sta *conn)
+void ath6kl_ps_queue_age_start(struct ath6kl_sta *conn)
 {
-	mod_timer(&conn->psq_age_timer, jiffies + msecs_to_jiffies(ATH6KL_PSQ_CHECK_AGE));
+	ath6kl_dbg(ATH6KL_DBG_POWERSAVE, 
+			"ps: aging_timer_start conn %p aid %d\n",
+			conn,
+			conn->aid);
+
+	mod_timer(&conn->psq_age_timer, jiffies + msecs_to_jiffies(ATH6KL_PS_QUEUE_CHECK_AGE));
+
+	return;
 }
 
-void ath6kl_psq_age_stop(struct ath6kl_sta *conn)
+void ath6kl_ps_queue_age_stop(struct ath6kl_sta *conn)
 {
+	ath6kl_dbg(ATH6KL_DBG_POWERSAVE, 
+			"ps: aging_timer_stop conn %p aid %d\n",
+			conn,
+			conn->aid);
+
 	del_timer_sync(&conn->psq_age_timer);
+
+	return;
 }
 
 enum htc_endpoint_id ath6kl_ac2_endpoint_id(void *devt, u8 ac)
@@ -1051,10 +1190,10 @@ void ath6kl_txpwr_rx_evt(void *devt, u8 tx_pwr)
 void ath6kl_pspoll_event(struct ath6kl_vif *vif, u8 aid)
 {
 	struct ath6kl_sta *conn;
-	struct sk_buff *skb;
 	bool psq_empty = false;
 	bool is_data_psq_empty, is_mgmt_psq_empty;
 	struct ath6kl *ar = vif->ar;
+	struct ath6kl_ps_buf_desc *ps_buf;
 
 	conn = ath6kl_find_sta_by_aid(vif, aid);
 
@@ -1065,12 +1204,12 @@ void ath6kl_pspoll_event(struct ath6kl_vif *vif, u8 aid)
 	 * becomes empty update the PVB for this station.
 	 */
 	spin_lock_bh(&conn->lock);
-	is_data_psq_empty = skb_queue_empty(&conn->psq);
-	is_mgmt_psq_empty = ath6kl_mgmt_queue_empty(&conn->mgmt_psq);
+	is_data_psq_empty = ath6kl_ps_queue_empty(&conn->psq_data);
+	is_mgmt_psq_empty = ath6kl_ps_queue_empty(&conn->psq_mgmt);
 	psq_empty  = is_data_psq_empty && is_mgmt_psq_empty;
 
 	ath6kl_dbg(ATH6KL_DBG_POWERSAVE, 
-				"%s: aid %d sta_flags %x psq %d mgmt_psq %d\n",
+				"%s: aid %d sta_flags %x psq_data %d psq_mgmt %d\n",
 				__func__, conn->aid, conn->sta_flags, !is_data_psq_empty, !is_mgmt_psq_empty);
 
 	if (psq_empty) {
@@ -1080,36 +1219,38 @@ void ath6kl_pspoll_event(struct ath6kl_vif *vif, u8 aid)
 	}
 
 	if (!is_mgmt_psq_empty) {
-		struct ath6kl_mgmt_buf *mgmt_buf;
-
-		mgmt_buf = ath6kl_mgmt_dequeue_head(&conn->mgmt_psq);
+		ps_buf = ath6kl_ps_queue_dequeue(&conn->psq_mgmt);
 		spin_unlock_bh(&conn->lock);
-    
+
+		WARN_ON(!ps_buf);    
 		conn->sta_flags |= STA_PS_POLLED;
 		ath6kl_wmi_send_action_cmd(ar->wmi, 
-									vif->fw_vif_idx,
-									mgmt_buf->id, 
-									mgmt_buf->freq, 
-									mgmt_buf->wait, 
-									mgmt_buf->buf,
-									mgmt_buf->len);
+					vif->fw_vif_idx,
+					ps_buf->id, 
+					ps_buf->freq, 
+					ps_buf->wait, 
+					ps_buf->buf,
+					ps_buf->len);
 		conn->sta_flags &= ~STA_PS_POLLED;
-		kfree(mgmt_buf);
+		kfree(ps_buf);
 	} else {
-		skb = skb_dequeue(&conn->psq);
+		ps_buf = ath6kl_ps_queue_dequeue(&conn->psq_data);
 		spin_unlock_bh(&conn->lock);
 
-		WARN_ON(!skb);
-		if (skb) {
-			conn->sta_flags |= STA_PS_POLLED;
-			ath6kl_data_tx(skb, vif->ndev);
-			conn->sta_flags &= ~STA_PS_POLLED;
+		if (ps_buf) {
+			WARN_ON(!ps_buf->skb);
+			if (ps_buf->skb) {
+				conn->sta_flags |= STA_PS_POLLED;
+				ath6kl_data_tx(ps_buf->skb, vif->ndev);
+				conn->sta_flags &= ~STA_PS_POLLED;
+			}
+			kfree(ps_buf);
 		}
 	}
 
 	spin_lock_bh(&conn->lock);
-	psq_empty  = skb_queue_empty(&conn->psq) && 
-					ath6kl_mgmt_queue_empty(&conn->mgmt_psq);
+	psq_empty = ath6kl_ps_queue_empty(&conn->psq_data)&& 
+			ath6kl_ps_queue_empty(&conn->psq_mgmt);
 	spin_unlock_bh(&conn->lock);
 
 	if (psq_empty)
@@ -1118,9 +1259,8 @@ void ath6kl_pspoll_event(struct ath6kl_vif *vif, u8 aid)
 
 void ath6kl_dtimexpiry_event(struct ath6kl_vif *vif)
 {
-	bool mcastq_empty = false;
-	struct sk_buff *skb;
 	struct ath6kl *ar = vif->ar;
+	struct ath6kl_ps_buf_desc *ps_buf;
 
 	/*
 	 * If there are no associated STAs, ignore the DTIM expiry event.
@@ -1134,25 +1274,27 @@ void ath6kl_dtimexpiry_event(struct ath6kl_vif *vif)
 	if (!vif->sta_list_index)
 		return;
 
-	spin_lock_bh(&vif->mcastpsq_lock);
-	mcastq_empty = skb_queue_empty(&vif->mcastpsq);
-	spin_unlock_bh(&vif->mcastpsq_lock);
-
-	if (mcastq_empty)
+	if (ath6kl_ps_queue_empty(&vif->psq_mcast))
 		return;
 
 	/* set the STA flag to dtim_expired for the frame to go out */
 	set_bit(DTIM_EXPIRED, &vif->flags);
 
-	spin_lock_bh(&vif->mcastpsq_lock);
-	while ((skb = skb_dequeue(&vif->mcastpsq)) != NULL) {
-		spin_unlock_bh(&vif->mcastpsq_lock);
+	/* 
+	 * FIXME : don't know if there are a lot of multicast frames be queued 
+	           in real network but it's better to have a mechanism to 
+	           not to dequeue all frames to cause credit starvation.
+	 */
+	spin_lock_bh(&vif->psq_mcast_lock);
+	while ((ps_buf = ath6kl_ps_queue_dequeue(&vif->psq_mcast)) != NULL) {
+		spin_unlock_bh(&vif->psq_mcast_lock);
 
-		ath6kl_data_tx(skb, vif->ndev);
+		ath6kl_data_tx(ps_buf->skb, vif->ndev);
+		kfree(ps_buf);
 
-		spin_lock_bh(&vif->mcastpsq_lock);
+		spin_lock_bh(&vif->psq_mcast_lock);
 	}
-	spin_unlock_bh(&vif->mcastpsq_lock);
+	spin_unlock_bh(&vif->psq_mcast_lock);
 
 	clear_bit(DTIM_EXPIRED, &vif->flags);
 
@@ -1172,9 +1314,7 @@ void ath6kl_disconnect_event(struct ath6kl_vif *vif, u8 reason, u8 *bssid,
 
 		/* if no more associated STAs, empty the mcast PS q */
 		if (vif->sta_list_index == 0) {
-			spin_lock_bh(&vif->mcastpsq_lock);
-			skb_queue_purge(&vif->mcastpsq);
-			spin_unlock_bh(&vif->mcastpsq_lock);
+			ath6kl_ps_queue_purge(&vif->psq_mcast);
 
 			/* clear the LSB of the TIM IE's BitMapCtl field */
 			if (test_bit(WMI_READY, &ar->flag))

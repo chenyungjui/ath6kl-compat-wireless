@@ -113,6 +113,8 @@ struct wmi_mgmt_tx_frame {
 #define WMM_AC_VI   2		/* video */
 #define WMM_AC_VO   3		/* voice */
 
+#define WMI_VOICE_USER_PRIORITY    0x7
+
 struct wmi {
 	u16 stream_exist_for_ac[WMM_NUM_AC];
 	u8 fat_pipe_exist;
@@ -2128,8 +2130,10 @@ struct wmi_tx_complete_event {
  */
 #define AP_MAX_NUM_STA          10
 
+/* FIXME : Only for chips after McK1.2. */
 #define NUM_DEV                 4
-#define NUM_CONN                (AP_MAX_NUM_STA + NUM_DEV - 1) /* As P2P device port won't enter CONN state, so we omit 1 CONN buffer */
+#define NUM_CONN                (AP_MAX_NUM_STA + NUM_DEV)	/* Sync with target's */
+#define WMI_NUM_CONN            (AP_MAX_NUM_STA + NUM_DEV - 1) 	/* As P2P device port won't enter CONN state, so we omit 1 CONN buffer */
 
 /* Spl. AID used to set DTIM flag in the beacons */
 #define MCAST_AID               0xFF
@@ -2498,8 +2502,8 @@ struct wmi_green_tx_params {
 /* flow control indication parameters */
 struct wmi_flowctrl_ind_event {
     u8     num_of_conn;
-    u8     ac_map[NUM_CONN];
-    u8     ac_queue_depth[NUM_CONN*2];
+    u8     ac_map[WMI_NUM_CONN];
+    u8     ac_queue_depth[WMI_NUM_CONN * 2];
 } __packed;
 
 /* SMPS parameters */
@@ -2659,6 +2663,54 @@ struct wmi_oppps_info {
 	u8 enable;
 	u8 ctwin;
 }__packed;
+
+/* Port operation */
+#define ADD_PORT_FAIL		0x0
+#define ADD_PORT_SUCCESS	0x1
+#define DEL_PORT_FAIL		0x2
+#define DEL_PORT_SUCCESS	0x3
+
+struct wmi_add_port_cmd {
+	u8 port_id;
+	u8 port_opmode;
+	u8 port_subopmode;
+	u8 mac_addr[6];
+}__packed;
+
+struct wmi_del_port_cmd {
+	u8 port_id;
+}__packed;
+
+struct wmi_port_status {
+	u8 status;
+	u8 port_id;
+	u8 mac_addr[6];
+}__packed;
+
+
+/* WMI_WOW_EXT_WAKE_EVENTID */
+typedef enum {
+	WOW_EXT_WAKE_TYPE_UNDEF = 0,
+	WOW_EXT_WAKE_TYPE_MAGIC,
+	WOW_EXT_WAKE_TYPE_PATTERN,
+	WOW_EXT_WAKE_TYPE_EAPREQ,
+	WOW_EXT_WAKE_TYPE_4WAYHS,
+	WOW_EXT_WAKE_TYPE_NETWORK_NLO,
+	WOW_EXT_WAKE_TYPE_NETWORK_DISASSOC,
+	WOW_EXT_WAKE_TYPE_NETWORK_GTK_OFFL_ERROR,
+	WOW_EXT_WAKE_TYPE_IPV4_TCP_SYN,
+	WOW_EXT_WAKE_TYPE_IPV6_TCP_SYN,
+	WOW_EXT_WAKE_TYPE_MAXs
+} WOW_EXT_WAKE_TYPE;
+
+struct wmi_wow_event_wake_event{
+	u16	flags;
+	u8	type;
+	u8	value;
+	u16	packet_length;
+	u16	wake_data_length;
+	u8	wake_data[1];
+} __packed;
 
 enum htc_endpoint_id ath6kl_wmi_get_control_ep(struct wmi *wmi);
 void ath6kl_wmi_set_control_ep(struct wmi *wmi, enum htc_endpoint_id ep_id);
@@ -2855,8 +2907,8 @@ inline struct sk_buff *ath6kl_wmi_get_new_buf(u32 size);
 
 int ath6kl_wmi_abort_scan_cmd(struct wmi *wmi, u8 if_idx);
 
-int ath6kl_wmi_set_ht_cap_cmd(struct wmi *wmi,
-	u8 band, u8 chan_width_40M_supported, u8 short_GI);
+int ath6kl_wmi_set_ht_cap_cmd(struct wmi *wmi, u8 if_idx,
+	u8 band, u8 chan_width_40M_supported, u8 short_GI, u8 intolerance_40MHz);
 
 int ath6kl_wmi_set_dtim_cmd(struct wmi *wmi, u8 if_idx, u32 dtim);
 
@@ -2876,4 +2928,7 @@ int ath6kl_wmi_get_rsn_cap(struct wmi *wmi, u8 if_idx);
 int ath6kl_wmi_get_pmkid_list(struct wmi *wmi, u8 if_idx);
 
 int ath6kl_wmi_set_fix_rates(struct wmi *wmi, u8 if_idx, u64 mask);
+
+int ath6kl_wmi_add_port_cmd(struct wmi *wmi, struct ath6kl_vif *vif, u8 opmode, u8 subopmode);
+int ath6kl_wmi_del_port_cmd(struct wmi *wmi, u8 if_idx, u8 port_id);
 #endif /* WMI_H */

@@ -342,6 +342,10 @@ struct host_interest {
 /*power save flag bit definitions*/
 #define HI_PWR_SAVE_LPL_ENABLED        0x1 
 
+/* power save mode - reduced power listen */
+#define HI_PWR_SAVE_LPL_MODE_RPL	2
+#define HI_PWR_SAVE_LPL_MODE_LSB	4
+
 /* SM power save options */
 #define HI_SMPS_ALLOW_MASK             0x1
 

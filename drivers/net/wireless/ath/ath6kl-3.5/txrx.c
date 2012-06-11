@@ -103,7 +103,8 @@ static bool ath6kl_powersave_ap(struct ath6kl_vif *vif, struct sk_buff *skb,
 	bool ps_queued = false, is_psq_empty = false;
 	bool trigger = false;
 	struct ath6kl *ar = vif->ar;
-
+	int ret;
+				
 	if (is_multicast_ether_addr(datap->h_dest)) {
 		u8 ctr = 0;
 		bool q_mcast = false;
@@ -116,8 +117,8 @@ static bool ath6kl_powersave_ap(struct ath6kl_vif *vif, struct sk_buff *skb,
 		}
 
 		ath6kl_dbg(ATH6KL_DBG_POWERSAVE, 
-					"%s: Multicast %d mcast_psq %d\n",
-					__func__, q_mcast, !skb_queue_empty(&vif->mcastpsq));
+					"%s: Multicast %d psq_mcast %d\n",
+					__func__, q_mcast, !ath6kl_ps_queue_empty(&vif->psq_mcast));
 
 		if (q_mcast) {
 			/*
@@ -127,32 +128,35 @@ static bool ath6kl_powersave_ap(struct ath6kl_vif *vif, struct sk_buff *skb,
 			if (!test_bit(DTIM_EXPIRED, &vif->flags)) {
 				bool is_mcastq_empty = false;
 
-				spin_lock_bh(&vif->mcastpsq_lock);
-				is_mcastq_empty =
-					skb_queue_empty(&vif->mcastpsq);
-				skb_queue_tail(&vif->mcastpsq, skb);
-				spin_unlock_bh(&vif->mcastpsq_lock);
+				spin_lock_bh(&vif->psq_mcast_lock);
+				is_mcastq_empty = ath6kl_ps_queue_empty(&vif->psq_mcast);
+				ret = ath6kl_ps_queue_enqueue_data(&vif->psq_mcast, skb);
+				spin_unlock_bh(&vif->psq_mcast_lock);
 
-				/*
-				 * If this is the first Mcast pkt getting
-				 * queued indicate to the target to set the
-				 * BitmapControl LSB of the TIM IE.
-				 */
-				if (is_mcastq_empty)
-					ath6kl_wmi_set_pvb_cmd(ar->wmi,
-							       vif->fw_vif_idx,
-							       MCAST_AID, 1);
-
+				if (ret == 0) {
+					/*
+					 * If this is the first Mcast pkt getting
+					 * queued indicate to the target to set the
+					 * BitmapControl LSB of the TIM IE.
+					 */
+					if (is_mcastq_empty)
+						ath6kl_wmi_set_pvb_cmd(ar->wmi,
+								       vif->fw_vif_idx,
+								       MCAST_AID, 1);
+				} else {
+					/* drop this packet */
+					dev_kfree_skb(skb);
+				}
 				ps_queued = true;
 			} else {
 				/*
 				 * This transmit is because of Dtim expiry.
 				 * Determine if MoreData bit has to be set.
 				 */
-				spin_lock_bh(&vif->mcastpsq_lock);
-				if (!skb_queue_empty(&vif->mcastpsq))
+				spin_lock_bh(&vif->psq_mcast_lock);
+				if (!ath6kl_ps_queue_empty(&vif->psq_mcast))
 					*flags |= WMI_DATA_HDR_FLAGS_MORE;
-				spin_unlock_bh(&vif->mcastpsq_lock);
+				spin_unlock_bh(&vif->psq_mcast_lock);
 			}
 		}
 	} else {
@@ -201,26 +205,30 @@ static bool ath6kl_powersave_ap(struct ath6kl_vif *vif, struct sk_buff *skb,
 				/* Queue the frames if the STA is sleeping */
 				spin_lock_bh(&conn->lock);
 				ath6kl_dbg(ATH6KL_DBG_POWERSAVE, 
-							"%s: Unicast aid %d sta_flags %x apsd_info %d psq %d mgmt_psq %d traffic %d\n",
+							"%s: Unicast aid %d sta_flags %x apsd_info %d psq_data %d psq_mgmt %d traffic %d\n",
 							__func__, conn->aid, conn->sta_flags, conn->apsd_info, 
-							!skb_queue_empty(&conn->psq), !ath6kl_mgmt_queue_empty(&conn->mgmt_psq), trigger);		
+							!ath6kl_ps_queue_empty(&conn->psq_data), !ath6kl_ps_queue_empty(&conn->psq_mgmt), trigger);		
 
-				is_psq_empty = skb_queue_empty(&conn->psq) && 
-								ath6kl_mgmt_queue_empty(&conn->mgmt_psq);
-				ath6kl_data_set_age(skb, 0);
-				skb_queue_tail(&conn->psq, skb);
+				is_psq_empty = ath6kl_ps_queue_empty(&conn->psq_data) && 
+						ath6kl_ps_queue_empty(&conn->psq_mgmt);
+
+				ret = ath6kl_ps_queue_enqueue_data(&conn->psq_data, skb);
 				spin_unlock_bh(&conn->lock);
 
-				if (is_psq_empty) {
-					if (trigger)
-						ath6kl_wmi_set_apsd_buffered_traffic_cmd(ar->wmi, vif->fw_vif_idx, conn->aid, 1, 0);
+				if (ret == 0) {
+					if (is_psq_empty) {
+						if (trigger)
+							ath6kl_wmi_set_apsd_buffered_traffic_cmd(ar->wmi, vif->fw_vif_idx, conn->aid, 1, 0);
 
-					/* If this is the first pkt getting queued
-					 * for this STA, update the PVB for this STA
-					 */
-					ath6kl_wmi_set_pvb_cmd(ar->wmi, vif->fw_vif_idx, conn->aid, 1);
+						/* If this is the first pkt getting queued
+						 * for this STA, update the PVB for this STA
+						 */
+						ath6kl_wmi_set_pvb_cmd(ar->wmi, vif->fw_vif_idx, conn->aid, 1);
+					}
+				} else {
+					/* drop this packet */
+					dev_kfree_skb(skb);
 				}
-				
 				ps_queued = true;
 			} else {
 				/*
@@ -229,12 +237,12 @@ static bool ath6kl_powersave_ap(struct ath6kl_vif *vif, struct sk_buff *skb,
 				 */
 				spin_lock_bh(&conn->lock);
 				ath6kl_dbg(ATH6KL_DBG_POWERSAVE, 
-							"%s: Unicast aid %d sta_flags %x apsd_info %d psq %d mgmt_psq %d\n",
+							"%s: Unicast aid %d sta_flags %x apsd_info %d psq_data %d psq_mgmt %d\n",
 							__func__, conn->aid, conn->sta_flags, conn->apsd_info, 
-							!skb_queue_empty(&conn->psq), !ath6kl_mgmt_queue_empty(&conn->mgmt_psq));		
+							!ath6kl_ps_queue_empty(&conn->psq_data), !ath6kl_ps_queue_empty(&conn->psq_mgmt));		
 
-				if (!skb_queue_empty(&conn->psq) || 
-					!ath6kl_mgmt_queue_empty(&conn->mgmt_psq))
+				if (!ath6kl_ps_queue_empty(&conn->psq_data) || 
+					!ath6kl_ps_queue_empty(&conn->psq_mgmt))
 					*flags |= WMI_DATA_HDR_FLAGS_MORE;
 
 				if (!(conn->sta_flags & STA_PS_POLLED)) {
@@ -270,6 +278,7 @@ bool ath6kl_mgmt_powersave_ap(struct ath6kl_vif *vif,
 	struct ieee80211_mgmt *mgmt;
 	struct ath6kl_sta *conn = NULL;
 	bool ps_queued = false, is_psq_empty = false;
+	int ret;
 
 	mgmt = (struct ieee80211_mgmt*)buf;
 	if (is_multicast_ether_addr(mgmt->da)) {
@@ -284,31 +293,36 @@ bool ath6kl_mgmt_powersave_ap(struct ath6kl_vif *vif,
 				/* Queue the frames if the STA is sleeping */
 				spin_lock_bh(&conn->lock);
 				ath6kl_dbg(ATH6KL_DBG_POWERSAVE, 
-							"%s: Mgmt aid %d sta_flags %x psq %d mgmt_psq %d\n",
+							"%s: Mgmt aid %d sta_flags %x psq_data %d psq_mgmt %d\n",
 							__func__, conn->aid, conn->sta_flags, 
-							!skb_queue_empty(&conn->psq), !ath6kl_mgmt_queue_empty(&conn->mgmt_psq));		
+							!ath6kl_ps_queue_empty(&conn->psq_data), !ath6kl_ps_queue_empty(&conn->psq_mgmt));		
 
-				is_psq_empty = skb_queue_empty(&conn->psq) && 
-								ath6kl_mgmt_queue_empty(&conn->mgmt_psq);
-				ath6kl_mgmt_queue_tail(&conn->mgmt_psq, 
-										buf, 
-										len, 
-										id, 
-										freq, 
-										wait, 
-										no_cck, 
-										dont_wait_for_ack);
+				is_psq_empty = ath6kl_ps_queue_empty(&conn->psq_data) && 
+						ath6kl_ps_queue_empty(&conn->psq_mgmt);
+
+				ret = ath6kl_ps_queue_enqueue_mgmt(&conn->psq_mgmt, 
+									buf, 
+									len, 
+									id, 
+									freq, 
+									wait, 
+									no_cck, 
+									dont_wait_for_ack);
 				spin_unlock_bh(&conn->lock);
 
-				/*
-				* If this is the first pkt getting queued
-				* for this STA, update the PVB for this
-				* STA.
-				*/
-				if (is_psq_empty)
-					ath6kl_wmi_set_pvb_cmd(vif->ar->wmi, vif->fw_vif_idx, 
-											conn->aid, 1);
-
+				if (ret == 0) {
+					/*
+					* If this is the first pkt getting queued
+					* for this STA, update the PVB for this
+					* STA.
+					*/
+					if (is_psq_empty)
+						ath6kl_wmi_set_pvb_cmd(vif->ar->wmi, vif->fw_vif_idx, 
+									conn->aid, 1);
+				} else {
+					/* FIXME : do something like report tx status fail if need. */
+					;
+				}
 				ps_queued = true;
 			} else {
 				/*
@@ -317,12 +331,12 @@ bool ath6kl_mgmt_powersave_ap(struct ath6kl_vif *vif,
 				*/
 				spin_lock_bh(&conn->lock);
 				ath6kl_dbg(ATH6KL_DBG_POWERSAVE, 
-							"%s: Mgmt aid %d sta_flags %x psq %d mgmt_psq %d\n",
+							"%s: Mgmt aid %d sta_flags %x psq_data %d psq_mgmt %d\n",
 							__func__, conn->aid, conn->sta_flags, 
-							!skb_queue_empty(&conn->psq), !ath6kl_mgmt_queue_empty(&conn->mgmt_psq));	
+							!ath6kl_ps_queue_empty(&conn->psq_data), !ath6kl_ps_queue_empty(&conn->psq_mgmt));	
 
-				if (!skb_queue_empty(&conn->psq) || 
-					!ath6kl_mgmt_queue_empty(&conn->mgmt_psq))
+				if (!ath6kl_ps_queue_empty(&conn->psq_data) || 
+					!ath6kl_ps_queue_empty(&conn->psq_mgmt))
 					*flags |= WMI_DATA_HDR_FLAGS_MORE;
 				spin_unlock_bh(&conn->lock);
 			}
@@ -390,156 +404,6 @@ fail_ctrl_tx:
 	return status;
 }
 
-int ath6kl_conn_list_init(struct ath6kl *ar)
-{
-        int i;
-        struct ath6kl_conn_list *pcon;
-
-        for (i=0; i<NUM_CONN; i++) {
-                pcon = &ar->conn_list[i];
-                INIT_LIST_HEAD(&pcon->conn_queue);
-                INIT_LIST_HEAD(&pcon->re_queue);
-                pcon->connect_status = 0;
-                pcon->previous_can_send = true;
-        }
-        return 0;
-}
-
-void ath6kl_conn_list_cleanup(struct ath6kl *ar)
-{
-        int i;
-        struct ath6kl_conn_list *pcon;
-        struct htc_packet *packet, *tmp_pkt;
-        struct list_head container;
-
-        INIT_LIST_HEAD(&container);
-
-        for (i=0; i<NUM_CONN; i++) {
-                pcon = &ar->conn_list[i];
-
-                spin_lock_bh(&ar->lock);
-      
-                if (!list_empty(&pcon->re_queue)) {
-                        list_for_each_entry_safe(packet, tmp_pkt, &pcon->re_queue, list) {
-                                list_del(&packet->list);
-                                packet->status = 0;
-                                list_add_tail(&packet->list, &container);
-                        }
-                }
-                
-                if (!list_empty(&pcon->conn_queue)) {
-                        list_for_each_entry_safe(packet, tmp_pkt, &pcon->conn_queue, list) {
-                                list_del(&packet->list);
-                                packet->status = 0;
-                                list_add_tail(&packet->list, &container);
-                        }
-                }
-
-                spin_unlock_bh(&ar->lock);
-        }
-
-        ath6kl_tx_complete(ar->htc_target, &container);
-}
-
-static bool ath6kl_check_can_send(struct ath6kl *ar, u8 connid)
-{
-        bool can_send = false;
-        struct ath6kl_conn_list *pcon = &ar->conn_list[connid];
-
-        do
-        {
-                if (pcon->ocs)
-                {
-                        break;
-                }
-                can_send = true;
-        }while(false);
-        return can_send;
-}
-
-void ath6kl_flowctrl_change(struct ath6kl_vif *vif)
-{
-        struct ath6kl *ar = vif->ar;
-        struct htc_packet *packet, *tmp_pkt;
-        int i, eid;
-        struct ath6kl_conn_list *pcon;
-        struct htc_endpoint *endpoint;
-        struct list_head    *tx_queue, container;
-        
-        INIT_LIST_HEAD(&container);
-
-        for (i=0; i<NUM_CONN; i++) {
-                pcon = &ar->conn_list[i];
-                if (!ath6kl_check_can_send(ar, i) && pcon->previous_can_send) {
-                
-                        spin_lock_bh(&ar->htc_target->tx_lock);
-                
-                        for (eid=ENDPOINT_2; eid<=ENDPOINT_5; eid++) {
-                                endpoint = &ar->htc_target->endpoint[eid];
-                                tx_queue = &endpoint->txq;
-                                if (list_empty(tx_queue)) continue;
-                    
-                                list_for_each_entry_safe(packet, tmp_pkt, tx_queue, list) {
-                                        if (packet->connid != i) continue;
-                                        list_del(&packet->list);
-
-                                        if (packet->recycle_count > 10) {
-                                                printk("recycle packet exceeded limitation\n");
-                                                packet->status = 0;
-                                                list_add_tail(&packet->list, &container);
-                                        }
-                                        else {
-                                                packet->recycle_count++;
-                                                list_add_tail(&packet->list, &pcon->re_queue);
-                                        }
-                                }
-                        }
-
-                        spin_unlock_bh(&ar->htc_target->tx_lock);
-                }
-                pcon->previous_can_send = ath6kl_check_can_send(ar, i);
-        }
-
-        ath6kl_tx_complete(ar->htc_target, &container);
-}
-
-void ath6kl_tx_scheduler(struct ath6kl_vif *vif)
-{
-        struct ath6kl *ar = vif->ar;
-        struct htc_packet *packet, *tmp_pkt;
-        int i;
-        struct ath6kl_conn_list *pcon;
-
-        for (i=0; i<NUM_CONN; i++) {
-                pcon = &ar->conn_list[i];
-
-                spin_lock_bh(&ar->lock);            
-
-                if (ath6kl_check_can_send(ar, i)) { 
-                        if (!list_empty(&pcon->re_queue)) {
-                                list_for_each_entry_safe(packet, tmp_pkt, &pcon->re_queue, list) {
-                                        list_del(&packet->list);
-                                        if (packet == NULL) continue;
-                                        if (packet->endpoint >= ENDPOINT_MAX) continue;
-
-                                        ath6kl_htc_tx(ar->htc_target, packet);
-                                }
-                        }
-
-                        if (!list_empty(&pcon->conn_queue)) {
-                                list_for_each_entry_safe(packet, tmp_pkt, &pcon->conn_queue, list) {
-                                        list_del(&packet->list);
-                                        if (packet == NULL) continue;
-                                        if (packet->endpoint >= ENDPOINT_MAX) continue;
-
-                                        ath6kl_htc_tx(ar->htc_target, packet);
-                                }
-                        }
-                }
-                spin_unlock_bh(&ar->lock);
-        }
-}
-
 int ath6kl_data_tx(struct sk_buff *skb, struct net_device *dev)
 {
 	struct ath6kl *ar = ath6kl_priv(dev);
@@ -552,7 +416,6 @@ int ath6kl_data_tx(struct sk_buff *skb, struct net_device *dev)
 	bool chk_adhoc_ps_mapping = false;
 	u32 wmi_data_flags = 0;
 	int ret, aggr_tx_status = AGGR_TX_UNKNOW;
-        struct ath6kl_conn_list *pcon;
 
 	ath6kl_dbg(ATH6KL_DBG_WLAN_TX,
 		   "%s: skb=0x%p, data=0x%p, len=0x%x\n", __func__,
@@ -716,32 +579,20 @@ int ath6kl_data_tx(struct sk_buff *skb, struct net_device *dev)
 	set_htc_pkt_info(&cookie->htc_pkt, cookie, skb->data, skb->len,
 			 eid, htc_tag);
 	cookie->htc_pkt.skb = skb;
-        cookie->htc_pkt.connid = vif->connid;
-        cookie->htc_pkt.recycle_count = 0;
 
 	ath6kl_dbg_dump(ATH6KL_DBG_RAW_BYTES, __func__, "tx ",
 			skb->data, skb->len);
 
-        spin_lock_bh(&ar->lock);
-        
-        pcon = &ar->conn_list[vif->connid];
-        if (!ath6kl_check_can_send(ar, vif->connid)) {
-            list_add_tail(&cookie->htc_pkt.list, &pcon->conn_queue);
-            
-            spin_unlock_bh(&ar->lock);
-        
-            return 0;
-        }
-        else if (!list_empty(&pcon->conn_queue)) {
-            list_add_tail(&cookie->htc_pkt.list, &pcon->conn_queue);
-            
-            spin_unlock_bh(&ar->lock);
-            
-            ath6kl_tx_scheduler(vif);
-            return 0;
-        }
-
-        spin_unlock_bh(&ar->lock);
+	/* P2P Flowctrl */
+	if (ar->conf_flags & ATH6KL_CONF_ENABLE_FLOWCTRL) {
+	        cookie->htc_pkt.connid = ath6kl_p2p_flowctrl_get_conn_id(vif, skb);
+	        cookie->htc_pkt.recycle_count = 0;
+		ret = ath6kl_p2p_flowctrl_tx_schedule_pkt(ar, (void *)cookie);
+		if (ret == 0)		/* Queue it */
+			return 0;
+		else if (ret < 0)	/* Error, drop it. */
+			goto fail_tx;
+	}
 
 	/*
 	 * HTC interface is asynchronous, if this fails, cleanup will
@@ -1100,7 +951,7 @@ void ath6kl_tx_data_cleanup(struct ath6kl *ar)
 		ath6kl_htc_flush_txep(ar->htc_target, ar->ac2ep_map[i],
 				      ATH6KL_DATA_PKT_TAG);
 
-        ath6kl_conn_list_cleanup(ar);
+	ath6kl_p2p_flowctrl_conn_list_cleanup(ar);
 }
 
 /* Rx functions */
@@ -1464,11 +1315,13 @@ static bool aggr_process_recv_frm(struct aggr_conn_info *aggr_conn, u8 tid,
 		    ((end > extended_end) && (cur > extended_end) &&
 		     (cur < end))) {
 			aggr_deque_frms(aggr_conn, tid, 0, 0);
+			spin_lock_bh(&rxtid->lock);
 			if (cur >= rxtid->hold_q_sz - 1)
 				rxtid->seq_next = cur - (rxtid->hold_q_sz - 1);
 			else
 				rxtid->seq_next = ATH6KL_MAX_SEQ_NO -
 						  (rxtid->hold_q_sz - 2 - cur);
+			spin_unlock_bh(&rxtid->lock);
 		} else {
 			/*
 			 * Dequeue only those frames that are outside the
@@ -1522,9 +1375,10 @@ static bool aggr_process_recv_frm(struct aggr_conn_info *aggr_conn, u8 tid,
 	aggr_deque_frms(aggr_conn, tid, 0, 1);
 
 	if (aggr_conn->timer_scheduled)
-		rxtid->progress = true;
-	else
+		return is_queued;
+
 		for (idx = 0 ; idx < rxtid->hold_q_sz; idx++) {
+			spin_lock_bh(&rxtid->lock);
 			if (rxtid->hold_q[idx].skb) {
 				/*
 				 * There is a frame in the queue and no
@@ -1538,8 +1392,10 @@ static bool aggr_process_recv_frm(struct aggr_conn_info *aggr_conn, u8 tid,
 					   HZ * (AGGR_RX_TIMEOUT) / 1000));
 				rxtid->progress = false;
 				rxtid->timer_mon = true;
+				spin_unlock_bh(&rxtid->lock);
 				break;
 			}
+			spin_unlock_bh(&rxtid->lock);
 		}
 
 	return is_queued;
@@ -1550,6 +1406,7 @@ void ath6kl_uapsd_trigger_frame_rx(struct ath6kl_vif *vif, struct ath6kl_sta *co
 	bool is_psq_empty;
 	bool is_psq_empty_at_start;
 	u32 num_frames_to_deliver;
+	struct ath6kl_ps_buf_desc *ps_buf;
 
 	/* If the APSD q for this STA is not empty, dequeue and send a pkt from
 	 * the head of the q. Also update the More data bit in the WMI_DATA_HDR
@@ -1569,23 +1426,21 @@ void ath6kl_uapsd_trigger_frame_rx(struct ath6kl_vif *vif, struct ath6kl_sta *co
 
 	spin_lock_bh(&conn->lock);
 	ath6kl_dbg(ATH6KL_DBG_POWERSAVE, 
-				"%s: TriggerRx aid %d sta_flags %x apsd_info %d psq %d mgmt_psq %d\n",
+				"%s: TriggerRx aid %d sta_flags %x apsd_info %d psq_data %d psq_mgmt %d\n",
 				__func__, conn->aid, conn->sta_flags, conn->apsd_info,
-				!skb_queue_empty(&conn->psq), !ath6kl_mgmt_queue_empty(&conn->mgmt_psq));	
+				!ath6kl_ps_queue_empty(&conn->psq_data), !ath6kl_ps_queue_empty(&conn->psq_mgmt));	
 	
-	is_psq_empty = skb_queue_empty(&conn->psq) && 
-					ath6kl_mgmt_queue_empty(&conn->mgmt_psq);
+	is_psq_empty = ath6kl_ps_queue_empty(&conn->psq_data) && 
+			ath6kl_ps_queue_empty(&conn->psq_mgmt);
 	spin_unlock_bh(&conn->lock);
 
 	is_psq_empty_at_start = is_psq_empty;
 	while ((!is_psq_empty) && (num_frames_to_deliver)) {
 		spin_lock_bh(&conn->lock);
-		if (!ath6kl_mgmt_queue_empty(&conn->mgmt_psq)) {
-			struct ath6kl_mgmt_buf *mgmt_buf;
-
-			mgmt_buf = ath6kl_mgmt_dequeue_head(&conn->mgmt_psq);
-			is_psq_empty = skb_queue_empty(&conn->psq) && 
-							ath6kl_mgmt_queue_empty(&conn->mgmt_psq);
+		if (!ath6kl_ps_queue_empty(&conn->psq_mgmt)) {
+			ps_buf = ath6kl_ps_queue_dequeue(&conn->psq_mgmt);
+			is_psq_empty = ath6kl_ps_queue_empty(&conn->psq_data) && 
+					ath6kl_ps_queue_empty(&conn->psq_mgmt);
 			spin_unlock_bh(&conn->lock);
 			
 			/* Set the STA flag to Trigger delivery, so that the frame will go out */
@@ -1598,36 +1453,39 @@ void ath6kl_uapsd_trigger_frame_rx(struct ath6kl_vif *vif, struct ath6kl_sta *co
 				conn->sta_flags |= STA_PS_APSD_EOSP;
 
 			ath6kl_wmi_send_action_cmd(vif->ar->wmi, 
-										vif->fw_vif_idx,
-										mgmt_buf->id,
-										mgmt_buf->freq,
-										mgmt_buf->wait,
-										mgmt_buf->buf,
-										mgmt_buf->len);
+						vif->fw_vif_idx,
+						ps_buf->id,
+						ps_buf->freq,
+						ps_buf->wait,
+						ps_buf->buf,
+						ps_buf->len);
 
-			kfree(mgmt_buf);
+			kfree(ps_buf);
 			conn->sta_flags &= ~(STA_PS_APSD_TRIGGER);
 			conn->sta_flags &= ~(STA_PS_APSD_EOSP);
 		} else {
-			struct sk_buff *skb;
-
-			skb = skb_dequeue(&conn->psq);
-			is_psq_empty = skb_queue_empty(&conn->psq) && 
-							ath6kl_mgmt_queue_empty(&conn->mgmt_psq);
+			ps_buf = ath6kl_ps_queue_dequeue(&conn->psq_data);
+			
+			is_psq_empty = ath6kl_ps_queue_empty(&conn->psq_data) && 
+					ath6kl_ps_queue_empty(&conn->psq_mgmt);
 			spin_unlock_bh(&conn->lock);
 
-			/* Set the STA flag to Trigger delivery, so that the frame will go out */
-			conn->sta_flags |= STA_PS_APSD_TRIGGER;
-			num_frames_to_deliver--;
+			if (ps_buf) {
+				/* Set the STA flag to Trigger delivery, so that the frame will go out */
+				conn->sta_flags |= STA_PS_APSD_TRIGGER;
+				num_frames_to_deliver--;
 
-			/* Last frame in the service period, set EOSP or queue empty */
-			if ((is_psq_empty) || 
-				(!num_frames_to_deliver))
-				conn->sta_flags |= STA_PS_APSD_EOSP;
+				/* Last frame in the service period, set EOSP or queue empty */
+				if ((is_psq_empty) || 
+					(!num_frames_to_deliver))
+					conn->sta_flags |= STA_PS_APSD_EOSP;
 
-			ath6kl_data_tx(skb, vif->ndev);
-			conn->sta_flags &= ~(STA_PS_APSD_TRIGGER);
-			conn->sta_flags &= ~(STA_PS_APSD_EOSP);
+				WARN_ON(!ps_buf->skb);
+				ath6kl_data_tx(ps_buf->skb, vif->ndev);
+				kfree(ps_buf);
+				conn->sta_flags &= ~(STA_PS_APSD_TRIGGER);
+				conn->sta_flags &= ~(STA_PS_APSD_EOSP);
+			}
 		}
 	}
 
@@ -1827,11 +1685,11 @@ void ath6kl_rx(struct htc_target *target, struct htc_packet *packet)
 		if (ps_state) {
 			conn->sta_flags |= STA_PS_SLEEP;
 			if (!prev_ps)
-				ath6kl_psq_age_start(conn);
+				ath6kl_ps_queue_age_start(conn);
 		} else {
 			conn->sta_flags &= ~STA_PS_SLEEP;
 			if (prev_ps)
-				ath6kl_psq_age_stop(conn);
+				ath6kl_ps_queue_age_stop(conn);
 		}
 
 		if (conn->sta_flags & STA_PS_SLEEP) {
@@ -1842,35 +1700,38 @@ void ath6kl_rx(struct htc_target *target, struct htc_packet *packet)
 
 		if (prev_ps ^ !!(conn->sta_flags & STA_PS_SLEEP)) {
 			if (!(conn->sta_flags & STA_PS_SLEEP)) {
-				struct sk_buff *skbuff = NULL;
-				struct ath6kl_mgmt_buf* mgmt_buf;
+				struct ath6kl_ps_buf_desc* ps_buf;
 				bool is_psq_empty_at_start;
 
 				spin_lock_bh(&conn->lock);
 				ath6kl_dbg(ATH6KL_DBG_POWERSAVE, 
-							"%s: psq %d mgmt_psq %d\n",
-							__func__, !skb_queue_empty(&conn->psq), !ath6kl_mgmt_queue_empty(&conn->mgmt_psq));
+							"%s: psq_data %d psq_mgmt %d\n",
+							__func__, !ath6kl_ps_queue_empty(&conn->psq_data), !ath6kl_ps_queue_empty(&conn->psq_mgmt));
 
-				is_psq_empty_at_start = skb_queue_empty(&conn->psq) && 
-										ath6kl_mgmt_queue_empty(&conn->mgmt_psq);
-				while ((mgmt_buf = ath6kl_mgmt_dequeue_head(&conn->mgmt_psq)) != NULL) {
+				is_psq_empty_at_start = ath6kl_ps_queue_empty(&conn->psq_data) && 
+							ath6kl_ps_queue_empty(&conn->psq_mgmt);
+				while ((ps_buf = ath6kl_ps_queue_dequeue(&conn->psq_mgmt)) != NULL) {
 					spin_unlock_bh(&conn->lock);
 
 					ath6kl_wmi_send_action_cmd(ar->wmi, vif->fw_vif_idx,
-												mgmt_buf->id,
-												mgmt_buf->freq,
-												mgmt_buf->wait,
-												mgmt_buf->buf,
-												mgmt_buf->len);
-					kfree(mgmt_buf);
+									ps_buf->id,
+									ps_buf->freq,
+									ps_buf->wait,
+									ps_buf->buf,
+									ps_buf->len);
+					kfree(ps_buf);
 					spin_lock_bh(&conn->lock);
 				}
 
-				while ((skbuff = skb_dequeue(&conn->psq)) != NULL) {
+				while ((ps_buf = ath6kl_ps_queue_dequeue(&conn->psq_data)) != NULL) {
 					spin_unlock_bh(&conn->lock);
-					ath6kl_data_tx(skbuff, vif->ndev);
+
+					WARN_ON(!ps_buf->skb);
+					ath6kl_data_tx(ps_buf->skb, vif->ndev);
+					kfree(ps_buf);
 					spin_lock_bh(&conn->lock);
 				}
+				
 				spin_unlock_bh(&conn->lock);
 
 				if (!is_psq_empty_at_start)
@@ -2308,12 +2169,15 @@ static void aggr_timeout(unsigned long arg)
 
 		if (rxtid->aggr && rxtid->hold_q) {
 			for (j = 0; j < rxtid->hold_q_sz; j++) {
+				spin_lock_bh(&rxtid->lock);
 				if (rxtid->hold_q[j].skb) {
 					aggr_conn->timer_scheduled = true;
 					rxtid->timer_mon = true;
 					rxtid->progress = false;
+					spin_unlock_bh(&rxtid->lock);
 					break;
 				}
+				spin_unlock_bh(&rxtid->lock);
 			}
 
 			if (j >= rxtid->hold_q_sz)

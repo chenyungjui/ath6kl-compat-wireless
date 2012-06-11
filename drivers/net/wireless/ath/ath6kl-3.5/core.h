@@ -45,7 +45,7 @@
 #define TO_STR(symbol) MAKE_STR(symbol)
 
 /* The script (used for release builds) modifies the following line. */
-#define __BUILD_VERSION_ 3.5.0.9999
+#define __BUILD_VERSION_ 3.5.0.56
 
 #define DRV_VERSION		TO_STR(__BUILD_VERSION_)
 
@@ -87,8 +87,17 @@
 
 #define ATH6KL_DISCONNECT_TIMEOUT 	  3
 
+/* Channel dwell time in fg scan */
+#define ATH6KL_FG_SCAN_INTERVAL           100 /* in msec */
+
 /* includes also the null byte */
 #define ATH6KL_FIRMWARE_MAGIC               "QCA-ATH6KL"
+
+/* Default HT CAP Parameters */
+#define ATH6KL_24GHZ_HT40_DEF_STA_IDX		(0)	/* only STA interface */
+#define ATH6KL_24GHZ_HT40_DEF_WIDTH		(1)	/* HT40 enabled */
+#define ATH6KL_24GHZ_HT40_DEF_SGI		(1)	/* SGI enabled */
+#define ATH6KL_24GHZ_HT40_DEF_INTOLR40		(0)	/* disabled */
 
 enum ath6kl_fw_ie_type {
 	ATH6KL_FW_IE_FW_VERSION = 0,
@@ -309,8 +318,20 @@ struct ath6kl_android_wifi_priv_cmd {
 
 #define MBOX_YIELD_LIMIT 99
 
-#define ATH6KL_PSQ_CHECK_AGE   (1 * 1000)  				/* 1 sec. */
-#define ATH6KL_PSQ_MAX_AGE     (5)					/* 5 cycles */
+/* AP-PS */
+#define ATH6KL_PS_QUEUE_CHECK_AGE	(1 * 1000) 		/* 1 sec. */
+#define ATH6KL_PS_QUEUE_MAX_AGE		(5)			/* 5 cycles */
+#define ATH6KL_PS_QUEUE_NO_AGE		(0)			/* no aging */
+
+#define ATH6KL_PS_QUEUE_MAX_DEPTH	(65535)			/* TODO */
+#define ATH6KL_PS_QUEUE_NO_DEPTH	(0)			/* unlimit */
+
+enum ps_queue_type {
+	PS_QUEUE_TYPE_NONE,
+	PS_QUEUE_TYPE_STA_UNICAST,
+	PS_QUEUE_TYPE_STA_MGMT,
+	PS_QUEUE_TYPE_AP_MULTICAST,
+};
 
 #define ATH6KL_RSN_CAP_NULLCONF		(0xffff)
 
@@ -328,6 +349,7 @@ struct ath6kl_android_wifi_priv_cmd {
 #define ATH6KL_CONF_ENABLE_11N			BIT(2)
 #define ATH6KL_CONF_ENABLE_TX_BURST		BIT(3)
 #define ATH6KL_CONF_SUSPEND_CUTPOWER		BIT(4)
+#define ATH6KL_CONF_ENABLE_FLOWCTRL		BIT(5)
 
 enum wlan_low_pwr_state {
 	WLAN_POWER_STATE_ON,
@@ -454,29 +476,40 @@ struct ath6kl_cookie {
 	struct ath6kl_cookie *arc_list_next;
 };
 
-struct ath6kl_mgmt_buf {
+struct ath6kl_ps_buf_desc {
 	struct list_head list;
+
+	u32 age;
+	size_t len;
+
+	/* For DATA */
+	struct sk_buff *skb;
+
+	/* For MGMT */
 	u32 freq;
 	u32 wait;
 	u32 id;
 	bool no_cck;
 	bool dont_wait_for_ack;
-	u32 age;
-	size_t len;
 	u8 buf[1];
 };
 
-struct ath6kl_mgmt_buf_head {
+struct ath6kl_ps_buf_head {
 	struct list_head list;
 	spinlock_t lock;
-	u32 len;
-};
 
-struct ath6kl_data_buf_cb {
-	/* total 48 bytes */
-	u32 reserved;		/* used by cfg80211? */
-	u32 ps_age;
-	u8 reserved2[40];
+	enum ps_queue_type queue_type;
+	int depth;
+
+	/* TODO : change by debugfs? */
+	u32 age_cycle;
+	u32 max_depth;
+
+	/* stat */
+	u32 enqueued;
+	u32 enqueued_err;	
+	u32 dequeued;
+	u32 aged;
 };
 
 struct ath6kl_sta {
@@ -488,11 +521,11 @@ struct ath6kl_sta {
 	u8 auth;
 	u8 wpa_ie[ATH6KL_MAX_IE];
 	struct ath6kl_vif *vif;
-	spinlock_t lock;			/* ath6kl_sta global lock, psq & mgmt_psq also use it. */
+	spinlock_t lock;	/* ath6kl_sta global lock, psq_data & psq_mgmt also use it. */
 
 	/* AP-PS*/
-	struct sk_buff_head psq;
-	struct ath6kl_mgmt_buf_head mgmt_psq;
+	struct ath6kl_ps_buf_head psq_data;
+	struct ath6kl_ps_buf_head psq_mgmt;
 	struct timer_list psq_age_timer;
 	u8 apsd_info;
 
@@ -661,6 +694,7 @@ enum ath6kl_vif_state {
 	ROC_CANCEL_PEND,
 	DISCONNECT_PEND,
 	PMKLIST_GET_PEND,
+	PORT_STATUS_PEND,
 };
 
 struct ath6kl_vif {
@@ -702,8 +736,8 @@ struct ath6kl_vif {
 	struct ath6kl_sta sta_list[AP_MAX_NUM_STA];
 	u8 sta_list_index;
 	struct ath6kl_req_key ap_mode_bkey;
-	struct sk_buff_head mcastpsq;
-	spinlock_t mcastpsq_lock;
+	struct ath6kl_ps_buf_head psq_mcast;
+	spinlock_t psq_mcast_lock;
 	int reconnect_flag;
 	u32 last_roc_id;
 	u32 last_cancel_roc_id;
@@ -721,7 +755,6 @@ struct ath6kl_vif {
 #ifdef ATH6KL_DIAGNOSTIC
 	struct wifi_diag diag;
 #endif    
-        u8 connid;
 	struct p2p_ps_info *p2p_ps_info_ctx;
 };
 
@@ -739,6 +772,7 @@ enum ath6kl_dev_state {
 	SKIP_SCAN,
 	ROAM_TBL_PEND,
 	FIRST_BOOT,
+	USB_REMOTE_WKUP,
 };
 
 enum ath6kl_state {
@@ -747,28 +781,6 @@ enum ath6kl_state {
 	ATH6KL_STATE_DEEPSLEEP,
 	ATH6KL_STATE_CUTPOWER,
 	ATH6KL_STATE_WOW,
-};
-
-struct ath6kl_conn_list
-{
-    struct list_head conn_queue;
-    struct list_head re_queue;
-
-    union
-    {
-        struct
-        {
-            u8 bk_uapsd    : 1;
-            u8 be_uapsd    : 1;
-            u8 vi_uapsd    : 1;
-            u8 vo_uapsd    : 1;
-            u8 ps          : 1;  // 1 means power saved
-            u8 ocs         : 1;  // 1 means off channel
-            u8 res         : 2;
-        };
-        u8 connect_status;
-    };
-    bool previous_can_send;
 };
 
 struct ath6kl {
@@ -953,6 +965,7 @@ struct ath6kl {
 			u8 band;
 			u8 chan_width_40M_supported;
 			u8 short_GI;
+			u8 intolerance_40MHz;
 		} ht_cap_param[IEEE80211_NUM_BANDS];
 	} debug;
 #endif /* CONFIG_ATH6KL_DEBUG */
@@ -963,7 +976,7 @@ struct ath6kl {
 	struct wake_lock wake_lock;
 #endif /* CONFIG_HAS_WAKELOCK */
 #endif
-    struct ath6kl_conn_list conn_list[NUM_CONN];
+	struct ath6kl_p2p_flowctrl *p2p_flowctrl_ctx;
 #ifdef CONFIG_HAS_EARLYSUSPEND
     struct early_suspend early_suspend;
 #endif /* CONFIG_HAS_EARLYSUSPEND */
@@ -990,28 +1003,14 @@ static inline u32 ath6kl_get_hi_item_addr(struct ath6kl *ar,
 	return addr;
 }
 
-static inline u32 ath6kl_data_get_age(struct sk_buff *buf)
+static inline u32 ath6kl_ps_queue_get_age(struct ath6kl_ps_buf_desc *ps_buf)
 {
-	struct ath6kl_data_buf_cb *data_buf_cb = (struct ath6kl_data_buf_cb *)(buf->cb);
-
-	return data_buf_cb->ps_age;
+	return ps_buf->age;
 }
 
-static inline void ath6kl_data_set_age(struct sk_buff *buf, u32 age)
+static inline void ath6kl_ps_queue_set_age(struct ath6kl_ps_buf_desc *ps_buf, u32 age)
 {
-	struct ath6kl_data_buf_cb *data_buf_cb = (struct ath6kl_data_buf_cb *)(buf->cb);
-	
-	data_buf_cb->ps_age = age;
-}
-
-static inline u32 ath6kl_mgmt_get_age(struct ath6kl_mgmt_buf *buf)
-{
-	return buf->age;
-}
-
-static inline void ath6kl_mgmt_set_age(struct ath6kl_mgmt_buf *buf, u32 age)
-{
-	buf->age = age;
+	ps_buf->age = age;
 }
 
 int ath6kl_configure_target(struct ath6kl *ar);
@@ -1047,9 +1046,6 @@ bool ath6kl_mgmt_powersave_ap(struct ath6kl_vif *vif,
                                      bool dont_wait_for_ack,
                                      u32 *flags);
 int ath6kl_data_tx(struct sk_buff *skb, struct net_device *dev);
-int ath6kl_conn_list_init(struct ath6kl *ar);
-void ath6kl_tx_scheduler(struct ath6kl_vif *vif);
-void ath6kl_flowctrl_change(struct ath6kl_vif *vif);
 
 struct aggr_info *aggr_init(struct ath6kl_vif *vif);
 struct aggr_conn_info *aggr_init_conn(struct ath6kl_vif *vif);
@@ -1113,21 +1109,34 @@ void ath6kl_check_wow_status(struct ath6kl *ar);
 void ath6kl_htc_pipe_attach(struct ath6kl *ar);
 void ath6kl_htc_mbox_attach(struct ath6kl *ar);
 
-void ath6kl_mgmt_queue_init(struct ath6kl_mgmt_buf_head *psq);
-void ath6kl_mgmt_queue_purge(struct ath6kl_mgmt_buf_head *psq);
-int ath6kl_mgmt_queue_empty(struct ath6kl_mgmt_buf_head *psq);
-int ath6kl_mgmt_queue_tail(struct ath6kl_mgmt_buf_head *psq, 
-								const u8 *buf, 
-								u16 len, 
-								u32 id, 
-								u32 freq, 
-								u32 wait, 
-								bool no_cck, 
-								bool dont_wait_for_ack);
-struct ath6kl_mgmt_buf *ath6kl_mgmt_dequeue_head(struct ath6kl_mgmt_buf_head *psq);
-void ath6kl_psq_age_handler(unsigned long ptr);
-void ath6kl_psq_age_start(struct ath6kl_sta *conn);
-void ath6kl_psq_age_stop(struct ath6kl_sta *conn);
+void ath6kl_ps_queue_init(struct ath6kl_ps_buf_head *psq,
+			enum ps_queue_type queue_type,
+			u32 age_cycle,
+			u32 max_depth);
+void ath6kl_ps_queue_purge(struct ath6kl_ps_buf_head *psq);
+int ath6kl_ps_queue_empty(struct ath6kl_ps_buf_head *psq);
+int ath6kl_ps_queue_depth(struct ath6kl_ps_buf_head *psq);
+void ath6kl_ps_queue_stat(struct ath6kl_ps_buf_head *psq, 
+			 int *depth, 
+			 u32 *enqueued, 
+			 u32 *enqueued_err, 
+			 u32 *dequeued,
+			 u32 *aged);
+struct ath6kl_ps_buf_desc *ath6kl_ps_queue_dequeue(struct ath6kl_ps_buf_head *psq);
+int ath6kl_ps_queue_enqueue_mgmt(struct ath6kl_ps_buf_head *psq, 
+				const u8 *buf, 
+				u16 len, 
+				u32 id, 
+				u32 freq, 
+				u32 wait, 
+				bool no_cck, 
+				bool dont_wait_for_ack);
+int ath6kl_ps_queue_enqueue_data(struct ath6kl_ps_buf_head *psq, 
+				struct sk_buff *skb);
+void ath6kl_ps_queue_age_handler(unsigned long ptr);
+void ath6kl_ps_queue_age_start(struct ath6kl_sta *conn);
+void ath6kl_ps_queue_age_stop(struct ath6kl_sta *conn);
+
 #ifdef CONFIG_ANDROID
 void ath6kl_sdio_init_msm(void);
 void ath6kl_sdio_exit_msm(void);

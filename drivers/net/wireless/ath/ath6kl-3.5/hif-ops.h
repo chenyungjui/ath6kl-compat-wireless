@@ -237,4 +237,11 @@ static inline void ath6kl_hif_late_resume(struct ath6kl *ar)
 }	
 #endif
 
+static inline int ath6kl_hif_bus_config(struct ath6kl *ar)
+{
+	ath6kl_dbg(ATH6KL_DBG_HIF, "hif buf config\n");
+
+	return ar->hif_ops->bus_config(ar);
+}
+
 #endif
