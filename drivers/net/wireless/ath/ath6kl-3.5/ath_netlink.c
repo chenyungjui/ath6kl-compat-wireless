@@ -87,7 +87,7 @@ static void ath_netlink_receive(struct sk_buff *__skb)
               gpid = pid; 
 		       
 	      ath_netlink_reply(pid, seq,data); 
-              rttm_issue_request(data);
+              rttm_issue_request(data,nlmsg_len(nlh));
               kfree_skb(skb);
            }
 	   return ;

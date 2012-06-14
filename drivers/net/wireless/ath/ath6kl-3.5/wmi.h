@@ -665,6 +665,15 @@ enum wmi_cmd_id {
         WMI_SET_BTCOEX_HID_CONFIG_CMDID,
         WMI_RTT_CONFIG_CMDID,
         WMI_STA_BMISS_ENHANCE_CMDID,
+    WMI_P2P_PERSISTENT_PROFILE_CMDID,
+    WMI_P2P_SET_JOIN_PROFILE_CMDID,
+
+    WMI_HEART_PARAMS_CMDID,
+    WMI_HEART_SET_TCP_PARAMS_CMDID,
+    WMI_HEART_SET_TCP_PKT_FILTER_CMDID,
+    WMI_HEART_SET_UDP_PARAMS_CMDID,
+    WMI_HEART_SET_UDP_PKT_FILTER_CMDID,
+    WMI_HEART_SET_NETWORK_INFO_CMDID,
 
 };
 
@@ -2700,6 +2709,7 @@ typedef enum {
 	WOW_EXT_WAKE_TYPE_NETWORK_GTK_OFFL_ERROR,
 	WOW_EXT_WAKE_TYPE_IPV4_TCP_SYN,
 	WOW_EXT_WAKE_TYPE_IPV6_TCP_SYN,
+	WOW_EXT_WAKE_TYPE_WLAN_HB,
 	WOW_EXT_WAKE_TYPE_MAXs
 } WOW_EXT_WAKE_TYPE;
 
@@ -2710,6 +2720,43 @@ struct wmi_wow_event_wake_event{
 	u16	packet_length;
 	u16	wake_data_length;
 	u8	wake_data[1];
+} __packed;
+
+#define WMI_MAX_TCP_FILTER_SIZE		32
+#define WMI_MAX_UDP_FILTER_SIZE		32
+
+struct wmi_heart_beat_params_cmd {
+    u8 enable;
+} __packed;
+
+struct wmi_heart_beat_tcp_params_cmd {
+    __le16   src_port;
+    __le16   dst_port;
+    __le16   timeout;
+} __packed;
+
+struct wmi_heart_beat_tcp_filter_cmd {
+    u8 length;
+    u8 filter[WMI_MAX_TCP_FILTER_SIZE];
+} __packed;
+
+struct wmi_heart_beat_udp_params_cmd {
+    __le16   src_port;
+    __le16   dst_port;
+    __le16   interval;
+    __le16   timeout;
+} __packed;
+
+struct wmi_heart_beat_udp_filter_cmd {
+    u8 length;
+    u8 filter[WMI_MAX_UDP_FILTER_SIZE];
+} __packed;
+
+struct wmi_heart_beat_network_info_cmd {
+    u32 device_ip;
+    u32 server_ip;
+    u32 gateway_ip;
+    u8 gateway_mac[ETH_ALEN];
 } __packed;
 
 enum htc_endpoint_id ath6kl_wmi_get_control_ep(struct wmi *wmi);
@@ -2880,7 +2927,7 @@ void *ath6kl_wmi_init(struct ath6kl *devt);
 void ath6kl_wmi_shutdown(struct wmi *wmi);
 void ath6kl_wmi_reset(struct wmi *wmi);
 
-int wmi_rtt_req_meas(struct wmi *wmip,struct nsp_mrqst *pstmrqst);
+int wmi_rtt_req_meas(struct wmi *wmip,struct nsp_mrqst *pstmrqst,u32 len);
 int wmi_rtt_config(struct wmi *wmip,struct nsp_rtt_config *);
 
 int ath6kl_wmi_set_green_tx_params(struct wmi *wmi,
@@ -2931,4 +2978,20 @@ int ath6kl_wmi_set_fix_rates(struct wmi *wmi, u8 if_idx, u64 mask);
 
 int ath6kl_wmi_add_port_cmd(struct wmi *wmi, struct ath6kl_vif *vif, u8 opmode, u8 subopmode);
 int ath6kl_wmi_del_port_cmd(struct wmi *wmi, u8 if_idx, u8 port_id);
+
+int ath6kl_wmi_set_noa_cmd(struct wmi *wmi, u8 if_idx, 
+				u8 count, u32 start, u32 duration, u32 interval);
+int ath6kl_wmi_set_oppps_cmd(struct wmi *wmi, u8 if_idx, 
+				u8 enable, u8 ctwin);
+int ath6kl_wmi_set_heart_beat_params(struct wmi *wmi, u8 if_idx, u32 param);
+int ath6kl_wmi_heart_beat_set_tcp_params(struct wmi *wmi, u8 if_idx,
+    u16 src_port, u16 dst_port, u16 timeout);
+int ath6kl_wmi_heart_beat_set_tcp_filter(struct wmi *wmi, u8 if_idx,
+    u8 *filter, u8 length);
+int ath6kl_wmi_heart_beat_set_udp_params(struct wmi *wmi, u8 if_idx,
+    u16 src_port, u16 dst_port, u16 interval, u16 timeout);
+int ath6kl_wmi_heart_beat_set_udp_filter(struct wmi *wmi, u8 if_idx,
+    u8 *filter, u8 length);
+int ath6kl_wmi_heart_beat_set_network_info(struct wmi *wmi, u8 if_idx,
+    u32 device_ip, u32 server_ip, u32 gateway_ip, u8 *gateway_mac);
 #endif /* WMI_H */

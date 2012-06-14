@@ -3539,6 +3539,13 @@ static int ath6kl_wmi_wow_ext_wake_event(struct wmi *wmi, u8 *datap,
 	ath6kl_dbg(ATH6KL_DBG_WOWLAN, "   value: %d\n", ev->value);
 	ath6kl_dbg(ATH6KL_DBG_WOWLAN, " pkt_len: %d\n", ev->packet_length);
 
+#ifdef ATH6KL_SUPPORT_WLAN_HB
+	if (ev->type == WOW_EXT_WAKE_TYPE_WLAN_HB) {
+		ath6kl_wlan_hb_event(wmi->parent_dev, ev->value, ev->wake_data,
+				ev->packet_length);
+	}
+#endif
+
 	return 0;
 }
 
@@ -3887,7 +3894,7 @@ void ath6kl_wmi_shutdown(struct wmi *wmi)
 	kfree(wmi);
 }
 
-int wmi_rtt_req_meas(struct wmi *wmip,struct nsp_mrqst *pstmrqst)
+int wmi_rtt_req_meas(struct wmi *wmip,struct nsp_mrqst *pstmrqst,u32 len)
 {
 	struct sk_buff *skb;
 	struct nsp_mrqst *cmd;
@@ -3895,20 +3902,26 @@ int wmi_rtt_req_meas(struct wmi *wmip,struct nsp_mrqst *pstmrqst)
 
 	//printk("NSP Request ID:%d mode:%d  channel : %d NoMeas : %d Rate : %x \n ",pstmrqst->request_id,pstmrqst->mode,pstmrqst->channel,pstmrqst->no_of_measurements,pstmrqst->transmit_rate);
 	if(pstmrqst->no_of_measurements > 10)
-		return -EINVAL;
-	skb = ath6kl_wmi_get_new_buf(sizeof(struct nsp_mrqst));
+        {
+          ath6kl_dbg(ATH6KL_DBG_RTT,"RTTREQ No Measurements >10 : %d ",pstmrqst->no_of_measurements);
+	  return -EINVAL;
+        }
+	skb = ath6kl_wmi_get_new_buf(len);
 	if (skb == NULL) {
-		return -ENOMEM;
+            ath6kl_dbg(ATH6KL_DBG_RTT,"RTTREQ Failed To get WMI Buffer");
+	    return -ENOMEM;
 	}
 
 	cmd = (struct nsp_mrqst *)skb->data;
-	memset(cmd,0, sizeof(struct nsp_mrqst));
-	memcpy(cmd, pstmrqst, sizeof(struct nsp_mrqst));
+	memset(cmd,0, len);
+	memcpy(cmd, pstmrqst, len);
     
 	status = ath6kl_wmi_cmd_send(wmip,0,skb,WMI_RTT_MEASREQ_CMDID,
 					NO_SYNC_WMIFLAG);
 	return status;
 }
+
+
 
 int wmi_rtt_config(struct wmi *wmip,struct nsp_rtt_config *pstrttcfg)
 {
@@ -4056,8 +4069,8 @@ int ath6kl_wmi_set_ht_cap_cmd(struct wmi *wmi, u8 if_idx,
 	cmd->short_GI_20MHz = short_GI;
 	cmd->short_GI_40MHz = short_GI;
 	cmd->intolerance_40MHz = intolerance_40MHz;
-	cmd->max_ampdu_len_exp = 2;	/* FIXME : 32K for 2 chain, 16K for 1 chain */
-
+	cmd->max_ampdu_len_exp = 2;	/* always 32K */
+	
 	ret = ath6kl_wmi_cmd_send(wmi, if_idx, skb, WMI_SET_HT_CAP_CMDID,
 				   NO_SYNC_WMIFLAG);
 
@@ -4367,3 +4380,220 @@ int ath6kl_wmi_del_port_cmd(struct wmi *wmi, u8 if_idx, u8 port_id)
 				NO_SYNC_WMIFLAG);
 }
 
+int ath6kl_wmi_set_noa_cmd(struct wmi *wmi, u8 if_idx, 
+				u8 count, u32 start, u32 duration, u32 interval)
+{
+	struct ath6kl_vif *vif;
+	struct wmi_noa_info *cmd;
+	struct wmi_noa_descriptor *noa_descriptor;
+	struct sk_buff *skb;
+	size_t cmd_size;
+
+	if (!wmi->parent_dev->p2p)
+		return -EINVAL;
+
+	vif = ath6kl_get_vif_by_index(wmi->parent_dev, if_idx);
+	if ((!vif) ||
+	    ((vif) &&
+	     (vif->nw_type != AP_NETWORK))) {
+		ath6kl_err("set noa in client mode? if_idx %d, count %d, start %d, duration %d, interval %d\n", 
+				if_idx, 
+				count,
+				start,
+				duration,
+				interval);
+		return -ENOTSUPP;
+	}
+
+	/* Only support one noa_descriptor now. */
+	cmd_size = sizeof(struct wmi_noa_info) +
+		   sizeof(struct wmi_noa_descriptor);
+	skb = ath6kl_wmi_get_new_buf(cmd_size);
+	if (!skb)
+		return -ENOMEM;
+
+	cmd = (struct wmi_noa_info *)skb->data;
+	cmd->enable = 0;
+	cmd->count = 0;
+	if (count) {
+		cmd->enable = 1;
+		cmd->count = 1;
+
+		noa_descriptor = (struct wmi_noa_descriptor *)cmd->noas;
+		noa_descriptor->duration = 0;
+		noa_descriptor->interval = 0;
+
+		/* 
+		 * interval: 0 will use Beacon interval as interval 
+		 * start_or_offst: always offset of next TBTT
+		 */
+		if (count == 1) {
+			/* One-shot NoA */
+			noa_descriptor->count_or_type = 1;
+			noa_descriptor->duration = duration;
+			noa_descriptor->interval = duration;	 /* TODO : across TBTT  */
+			noa_descriptor->start_or_offset = start;
+		} else if (count != 255) {
+			/* Non-Periodic NoA */
+			noa_descriptor->count_or_type = count;
+			noa_descriptor->duration = duration;
+			noa_descriptor->interval = interval;
+			noa_descriptor->start_or_offset = start;
+		} else {
+			/* Periodic NoA */
+			noa_descriptor->count_or_type = 255;
+			noa_descriptor->duration = duration;
+			noa_descriptor->interval = interval;
+			noa_descriptor->start_or_offset = start;
+		}
+	}
+
+	ath6kl_dbg(ATH6KL_DBG_WMI, "set_noa: if_idx %d count %d start %d duration %d interval %d\n",
+				if_idx, 
+				count,
+				start,
+				duration,
+				interval);
+
+	return ath6kl_wmi_cmd_send(wmi, if_idx, skb, WMI_SET_NOA_CMDID,
+				NO_SYNC_WMIFLAG);
+}
+
+int ath6kl_wmi_set_oppps_cmd(struct wmi *wmi, u8 if_idx, 
+				u8 enable, u8 ctwin)
+{
+	struct sk_buff *skb;
+	struct wmi_oppps_info *cmd;
+
+	skb = ath6kl_wmi_get_new_buf(sizeof(*cmd));
+	if (!skb)
+		return -ENOMEM;
+
+	cmd = (struct wmi_oppps_info *)skb->data;
+	cmd->enable = enable;
+	if (enable)
+		cmd->ctwin = ctwin;
+	else
+		cmd->ctwin = 0;
+	
+	ath6kl_dbg(ATH6KL_DBG_WMI, "set_oppps: if_idx %d enable %d ctwin %d\n",
+				if_idx, 
+				enable,
+				ctwin);
+
+	return ath6kl_wmi_cmd_send(wmi, if_idx, skb, WMI_SET_OPPPS_CMDID,
+				NO_SYNC_WMIFLAG);
+}
+
+#ifdef ATH6KL_SUPPORT_WLAN_HB
+int ath6kl_wmi_set_heart_beat_params(struct wmi *wmi, u8 if_idx, u32 param)
+{
+	struct sk_buff *skb;
+	struct wmi_heart_beat_params_cmd *cmd;
+	
+	skb = ath6kl_wmi_get_new_buf(sizeof(*cmd));
+	if (!skb)
+		return -ENOMEM;
+	
+	cmd = (struct wmi_heart_beat_params_cmd *)skb->data;
+	cmd->enable = param;
+	
+	return ath6kl_wmi_cmd_send(wmi, if_idx, skb, WMI_HEART_PARAMS_CMDID,
+		NO_SYNC_WMIFLAG);
+}
+
+int ath6kl_wmi_heart_beat_set_tcp_params(struct wmi *wmi, u8 if_idx,
+	u16 src_port, u16 dst_port, u16 timeout)
+{
+	struct sk_buff *skb;
+	struct wmi_heart_beat_tcp_params_cmd *cmd;
+
+	skb = ath6kl_wmi_get_new_buf(sizeof(*cmd));
+	if (!skb)
+		return -ENOMEM;
+
+	cmd = (struct wmi_heart_beat_tcp_params_cmd *)skb->data;
+	cmd->src_port = cpu_to_le16(src_port);
+	cmd->dst_port = cpu_to_le16(dst_port);
+	cmd->timeout = cpu_to_le16(timeout);
+
+	return ath6kl_wmi_cmd_send(wmi, if_idx, skb, WMI_HEART_SET_TCP_PARAMS_CMDID,
+		NO_SYNC_WMIFLAG);
+}
+
+int ath6kl_wmi_heart_beat_set_tcp_filter(struct wmi *wmi, u8 if_idx,
+	u8 *filter, u8 length)
+{
+	struct sk_buff *skb;
+	struct wmi_heart_beat_tcp_filter_cmd *cmd;
+
+	skb = ath6kl_wmi_get_new_buf(sizeof(*cmd));
+	if (!skb)
+		return -ENOMEM;
+
+	cmd = (struct wmi_heart_beat_tcp_filter_cmd *)skb->data;
+	memcpy(cmd->filter, filter, length);
+	cmd->length = length;
+
+	return ath6kl_wmi_cmd_send(wmi, if_idx, skb, WMI_HEART_SET_TCP_PKT_FILTER_CMDID,
+		NO_SYNC_WMIFLAG);
+}
+
+int ath6kl_wmi_heart_beat_set_udp_params(struct wmi *wmi, u8 if_idx,
+	u16 src_port, u16 dst_port, u16 interval, u16 timeout)
+{
+	struct sk_buff *skb;
+	struct wmi_heart_beat_udp_params_cmd *cmd;
+
+	skb = ath6kl_wmi_get_new_buf(sizeof(*cmd));
+	if (!skb)
+		return -ENOMEM;
+
+	cmd = (struct wmi_heart_beat_udp_params_cmd *)skb->data;
+	cmd->src_port = cpu_to_le16(src_port);
+	cmd->dst_port = cpu_to_le16(dst_port);
+	cmd->interval = cpu_to_le16(interval);
+	cmd->timeout = cpu_to_le16(timeout);
+
+	return ath6kl_wmi_cmd_send(wmi, if_idx, skb, WMI_HEART_SET_UDP_PARAMS_CMDID,
+		NO_SYNC_WMIFLAG);
+}
+
+int ath6kl_wmi_heart_beat_set_udp_filter(struct wmi *wmi, u8 if_idx,
+	u8 *filter, u8 length)
+{
+	struct sk_buff *skb;
+	struct wmi_heart_beat_udp_filter_cmd *cmd;
+	
+	skb = ath6kl_wmi_get_new_buf(sizeof(*cmd));
+	if (!skb)
+		return -ENOMEM;
+	
+	cmd = (struct wmi_heart_beat_udp_filter_cmd *)skb->data;
+	memcpy(cmd->filter, filter, length);
+	cmd->length = length;
+	
+	return ath6kl_wmi_cmd_send(wmi, if_idx, skb, WMI_HEART_SET_UDP_PKT_FILTER_CMDID,
+		NO_SYNC_WMIFLAG);
+}
+
+int ath6kl_wmi_heart_beat_set_network_info(struct wmi *wmi, u8 if_idx,
+	u32 device_ip, u32 server_ip, u32 gateway_ip, u8 *gateway_mac)
+{
+	struct sk_buff *skb;
+	struct wmi_heart_beat_network_info_cmd *cmd;
+	
+	skb = ath6kl_wmi_get_new_buf(sizeof(*cmd));
+	if (!skb)
+		return -ENOMEM;
+	
+	cmd = (struct wmi_heart_beat_network_info_cmd *)skb->data;
+	cmd->device_ip = cpu_to_le32(device_ip);
+	cmd->server_ip = cpu_to_le32(server_ip);
+	cmd->gateway_ip = cpu_to_le32(gateway_ip);
+	memcpy(cmd->gateway_mac, gateway_mac, ETH_ALEN);
+	
+	return ath6kl_wmi_cmd_send(wmi, if_idx, skb, WMI_HEART_SET_NETWORK_INFO_CMDID,
+		NO_SYNC_WMIFLAG);
+}
+#endif

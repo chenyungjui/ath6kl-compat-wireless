@@ -26,7 +26,7 @@ int rttm_recv(void *buf,u32 len);
 
 void rttm_free(void);
 
-int rttm_issue_request(void *buf);
+int rttm_issue_request(void *buf,u32 len);
 
 
 #endif /* _HOST_PKTLOG_API_H_ */

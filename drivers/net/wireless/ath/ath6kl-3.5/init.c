@@ -496,14 +496,17 @@ void ath6kl_init_control_info(struct ath6kl_vif *vif)
 	memcpy(vif->ap_country_code, DEF_AP_COUNTRY_CODE, 3);
 
 	/* 
-	 * For CE release, disable auto-reconnect and roaming/low rssi scan.
-	 * Let supplicant take care this part.
+	 * For CE release, 
+	 *  1. Disable auto-reconnect.
+	 *  2. Disable roaming/low rssi scan.
+	 *  3. Enlarge channel dewell-time in active channel.
 	 */
 	memset(&vif->sc_params, 0, sizeof(vif->sc_params));
 	vif->sc_params.short_scan_ratio = 3;
 	vif->sc_params.scan_ctrl_flags = (CONNECT_SCAN_CTRL_FLAGS |
-										SCAN_CONNECTED_CTRL_FLAGS |
-										ACTIVE_SCAN_CTRL_FLAGS);
+						SCAN_CONNECTED_CTRL_FLAGS |
+						ACTIVE_SCAN_CTRL_FLAGS);
+	vif->sc_params.maxact_chdwell_time = (2 * ATH6KL_SCAN_ACT_DEWELL_TIME);
 }
 
 /*
@@ -629,7 +632,8 @@ static int ath6kl_target_config_wlan_params(struct ath6kl *ar, int idx)
 		}
 	}
 
-	if (!ath6kl_mod_debug_quirks(ar, ATH6KL_MODULE_DISABLE_2G_HT40)) {
+	if ((ar->target_subtype & TARGET_SUBTYPE_HT40) && 
+	    (!ath6kl_mod_debug_quirks(ar, ATH6KL_MODULE_DISABLE_2G_HT40))) {
 		/*
 		 * Don't allow HT40 in 2.4Ghz for P2P related inerfaces
 		 * in current design.
@@ -1492,7 +1496,7 @@ static int ath6kl_upload_board_file(struct ath6kl *ar)
 	}
 
 	/* record the fact that Board Data IS initialized */
-	param = 1;
+	param = board_data_size;
 	ath6kl_bmi_write(ar,
 			 ath6kl_get_hi_item_addr(ar,
 			 HI_ITEM(hi_board_data_initialized)),
@@ -2090,6 +2094,52 @@ int ath6kl_init_hw_stop(struct ath6kl *ar)
 	return 0;
 }
 
+static u32 ath6kl_init_get_subtype(struct ath6kl *ar)
+{
+	u32 subtype = TARGET_SUBTYPE_HT20_1SS_SING_BAND; /* default is min. capability */
+	int is_2ss, is_dual_band, is_ht40;
+
+	/* 
+	 * FIXME : It's better to query the target instead of getting
+	 *         from board-data but not yet support it now.
+	 *         Here is a temporary way to fetch this information from
+	 *         board-data. 
+	 *
+	 * WARNING : Please load the correct board-data for each device to 
+	 *           avoid to harm the device.
+	 */
+	is_2ss = is_dual_band = 0;
+	is_ht40 = 1;
+	if (ar->fw_board) {
+		if ((ar->fw_board[BDATA_TXRXMASK_OFFSET] & 0x30) == 0x30)
+			is_2ss = 1;
+		if (ar->fw_board[BDATA_OPFLAGS_OFFSET] & (1 << 0))
+			is_dual_band = 1;
+
+		/* Don't expect to support 5G-HT40-disabled case. */
+		if (ar->fw_board[BDATA_OPFLAGS_OFFSET] & (1 << 3))
+			is_ht40 = 0;
+
+		if (is_ht40)
+			subtype |= TARGET_SUBTYPE_HT40;
+		if (is_2ss)
+			subtype |= TARGET_SUBTYPE_2SS;		
+		if (is_dual_band)
+			subtype |= TARGET_SUBTYPE_DUAL;
+			
+	} else {
+		WARN_ON(1);
+	}
+	
+	ath6kl_info("target's subtype is %x, ht40 %d 2ss %d dual_band %d\n", 
+			subtype,
+			is_ht40,
+			is_2ss,
+			is_dual_band);
+
+	return subtype;
+}
+
 int ath6kl_core_init(struct ath6kl *ar)
 {
 	struct ath6kl_bmi_target_info targ_info;
@@ -2147,6 +2197,9 @@ int ath6kl_core_init(struct ath6kl *ar)
 	ret = ath6kl_fetch_firmwares(ar);
 	if (ret)
 		goto err_htc_cleanup;
+
+	/* FIXME : move to before ath6kl_init_hw_params() call in this function. */
+	ar->target_subtype = ath6kl_init_get_subtype(ar);
 
 	/* FIXME: we should free all firmwares in the error cases below */
 

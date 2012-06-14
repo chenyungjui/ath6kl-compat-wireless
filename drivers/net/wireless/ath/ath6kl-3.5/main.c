@@ -344,7 +344,7 @@ int ath6kl_ps_queue_enqueue_mgmt(struct ath6kl_ps_buf_head *psq,
 	}
 
 	mgmt_buf_size = len + sizeof(struct ath6kl_ps_buf_desc) - 1;
-	ps_buf = kmalloc(mgmt_buf_size, GFP_KERNEL);
+	ps_buf = kmalloc(mgmt_buf_size, GFP_ATOMIC);
 	if (!ps_buf) {
 		psq->enqueued_err++;
 		return -ENOMEM;	
@@ -391,7 +391,7 @@ int ath6kl_ps_queue_enqueue_data(struct ath6kl_ps_buf_head *psq,
 	}
 
 	data_buf_size = sizeof(struct ath6kl_ps_buf_desc);
-	ps_buf = kmalloc(data_buf_size, GFP_KERNEL);
+	ps_buf = kmalloc(data_buf_size, GFP_ATOMIC);
 	if (!ps_buf) {
 		psq->enqueued_err++;
 		return -ENOMEM;	
@@ -1274,8 +1274,12 @@ void ath6kl_dtimexpiry_event(struct ath6kl_vif *vif)
 	if (!vif->sta_list_index)
 		return;
 
-	if (ath6kl_ps_queue_empty(&vif->psq_mcast))
+	spin_lock_bh(&vif->psq_mcast_lock);
+	if (ath6kl_ps_queue_empty(&vif->psq_mcast)) {
+		spin_unlock_bh(&vif->psq_mcast_lock);
 		return;
+	}
+	spin_unlock_bh(&vif->psq_mcast_lock);
 
 	/* set the STA flag to dtim_expired for the frame to go out */
 	set_bit(DTIM_EXPIRED, &vif->flags);
@@ -1435,7 +1439,26 @@ static int ath6kl_close(struct net_device *dev)
 
 	netif_stop_queue(dev);
 
+	switch (vif->sme_state) {
+	case SME_CONNECTING:
+		cfg80211_connect_result(vif->ndev, vif->bssid, NULL, 0,
+					NULL, 0,
+					WLAN_STATUS_UNSPECIFIED_FAILURE,
+					GFP_KERNEL);
+		break;
+	case SME_CONNECTED:
+		cfg80211_disconnected(vif->ndev, 0, NULL, 0, GFP_KERNEL);
+		break;
+	case SME_DISCONNECTED:
+	default:
+		break;
+	}
+
 	ath6kl_disconnect(vif);
+
+	vif->sme_state = SME_DISCONNECTED;
+	clear_bit(CONNECTED, &vif->flags);
+	clear_bit(CONNECT_PEND, &vif->flags);
 
 	if (test_bit(WMI_READY, &ar->flag)) {
 		if (ath6kl_wmi_scanparams_cmd(ar->wmi, vif->fw_vif_idx, 0xFFFF,
@@ -1460,16 +1483,17 @@ static struct net_device_stats *ath6kl_get_stats(struct net_device *dev)
 
 static int ath6kl_ioctl_standard(struct net_device *dev, struct ifreq *rq, int cmd)
 {
-	struct ath6kl_vif *vif = netdev_priv(dev);
+	struct ath6kl_vif *p2p_vif, *vif = netdev_priv(dev);
 	void *data = (void *)(rq->ifr_data);
 	int ret = 0;
+	int count, start, duration;
 
 	switch(cmd) {
 	case ATH6KL_IOCTL_STANDARD01:
-	{	/* FIXME : not yet support all Android private commands. */
+	{
 		struct ath6kl_android_wifi_priv_cmd android_cmd;
 		char *user_cmd, *pos;
-		u8 pwr_mode;
+		u8 pwr_mode, scanband_type, not_allow_ch;
 
 		if(copy_from_user(&android_cmd, data, sizeof(struct ath6kl_android_wifi_priv_cmd)))
 			ret = -EIO;
@@ -1484,7 +1508,7 @@ static int ath6kl_ioctl_standard(struct net_device *dev, struct ifreq *rq, int c
 				ret = -EIO;
 			else {
 				if ((pos = strstr(user_cmd, "P2P_SET_PS ")) != NULL) {
-					/* P2P_SET_PS {legacy_ps} {opp_ps} {ctwindow} */
+					/* SET::P2P_SET_PS {legacy_ps} {opp_ps} {ctwindow} */
 					if (android_cmd.used_len > 12) {
 						if (down_interruptible(&vif->ar->sem)) {
 							ath6kl_err("busy, couldn't get access\n");
@@ -1504,6 +1528,81 @@ static int ath6kl_ioctl_standard(struct net_device *dev, struct ifreq *rq, int c
 						up(&vif->ar->sem);
 					} else
 						ret = -EFAULT;
+				} else if ((pos = strstr(user_cmd, "SETBAND ")) != NULL) {
+					/* SET::SETBAND {band} */
+					if (android_cmd.used_len > 10) {
+						ret = 0;
+						scanband_type = pos[8] - '0';
+						if (scanband_type == ANDROID_SETBAND_ALL)
+							vif->scanband_type = SCANBAND_TYPE_ALL;
+						else if (scanband_type == ANDROID_SETBAND_5G)
+							vif->scanband_type = SCANBAND_TYPE_5G;
+						else if (scanband_type == ANDROID_SETBAND_2G)
+							vif->scanband_type = SCANBAND_TYPE_2G;
+						else
+							ret = -ENOTSUPP;
+
+						/* Disconnect if AP is in not allowed band. */
+						not_allow_ch = 0;
+						if ((vif->bss_ch) &&
+						    (vif->scanband_type != SCANBAND_TYPE_ALL) &&
+						    (((vif->scanband_type == SCANBAND_TYPE_5G) && 
+						    	(vif->bss_ch < 2484)) ||
+						     ((vif->scanband_type == SCANBAND_TYPE_2G) && 
+						     	(vif->bss_ch > 2484))))
+						     not_allow_ch = 1;
+
+						if ((!ret) && 
+						    (vif->nw_type == INFRA_NETWORK) && 
+						    (not_allow_ch) &&
+						    (test_bit(CONNECTED, &vif->flags))) {
+							ath6kl_info("Disconnect because of band changed!");
+							vif->reconnect_flag = 0;
+							ret = ath6kl_disconnect(vif);
+							memset(vif->ssid, 0, sizeof(vif->ssid));
+							vif->ssid_len = 0;
+						}
+					} else
+						ret = -EFAULT;					
+				} else if ((pos = strstr(user_cmd, "P2P_SET_NOA ")) != NULL) {
+					/* SET::P2P_SET_NOA {count} {duration} {interval} */
+
+					/* FIXME : remove when ready */
+					ret = -EFAULT;	
+					break;
+
+					if (android_cmd.used_len > 12) {
+						if (down_interruptible(&vif->ar->sem)) {
+							ath6kl_err("busy, couldn't get access\n");
+							ret = -EIO;
+							break;
+						}
+
+						ret = 0;
+						sscanf(pos + 12, "%d %d %d", &count, &start, &duration);
+						if (ath6kl_wmi_set_noa_cmd(vif->ar->wmi, 
+									     vif->fw_vif_idx,
+									     (u8)count,
+									     (u32)start,
+									     (u32)duration,
+									     0))
+							ret = -EIO;
+
+						up(&vif->ar->sem);
+					} else
+						ret = -EFAULT;
+				} else if ((pos = strstr(user_cmd, "P2P_DEV_ADDR")) != NULL) {
+					/* GET::P2P_DEV_ADDR */
+					/* In current design, the last vif is always be P2P-device. */
+					p2p_vif = ath6kl_get_vif_by_index(vif->ar, (vif->ar->vif_max - 1));
+					if (p2p_vif) {
+						memcpy(user_cmd, p2p_vif->ndev->dev_addr, ETH_ALEN);
+						if(copy_to_user(android_cmd.buf, user_cmd, ETH_ALEN))
+							ret = -EFAULT;	
+						else
+							ret = 0;
+					} else
+						ret = -EFAULT;						
 				} else {
 					ath6kl_err("%s : not yet support \"%s\"\n", 
 									__func__, 
@@ -1633,7 +1732,7 @@ int ath6kl_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
 	rtnl_unlock();
 
 	switch(cmd) {
-	case ATH6KL_IOCTL_STANDARD01: 	/* Reserved for Android PNO */
+	case ATH6KL_IOCTL_STANDARD01: 	/* Android privacy command */
 	case ATH6KL_IOCTL_STANDARD02:	/* supplicant escape purpose to support WiFi-Direct Cert. */
 	case ATH6KL_IOCTL_STANDARD12: 	/* hole, please reserved */
 	case ATH6KL_IOCTL_STANDARD13: 	/* TX99 */

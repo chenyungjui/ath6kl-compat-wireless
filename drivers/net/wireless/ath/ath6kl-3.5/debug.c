@@ -16,7 +16,7 @@
 
 #include "core.h"
 
-#include <linux/circ_buf.h>
+#include <linux/skbuff.h>
 #include <linux/fs.h>
 #include <linux/vmalloc.h>
 #include <linux/export.h>
@@ -38,9 +38,7 @@ struct ath6kl_fwlog_slot {
 	u8 payload[0];
 };
 
-#define ATH6KL_FWLOG_SIZE 32768
-#define ATH6KL_FWLOG_SLOT_SIZE (sizeof(struct ath6kl_fwlog_slot) + \
-				ATH6KL_FWLOG_PAYLOAD_SIZE)
+#define ATH6KL_FWLOG_MAX_ENTRIES 20
 #define ATH6KL_FWLOG_VALID_MASK 0x1ffff
 
 int ath6kl_printk(const char *level, const char *fmt, ...)
@@ -253,106 +251,104 @@ static const struct file_operations fops_war_stats = {
 	.llseek = default_llseek,
 };
 
-static void ath6kl_debug_fwlog_add(struct ath6kl *ar, const void *buf,
-				   size_t buf_len)
-{
-	struct circ_buf *fwlog = &ar->debug.fwlog_buf;
-	size_t space;
-	int i;
-
-	/* entries must all be equal size */
-	if (WARN_ON(buf_len != ATH6KL_FWLOG_SLOT_SIZE))
-		return;
-
-	space = CIRC_SPACE(fwlog->head, fwlog->tail, ATH6KL_FWLOG_SIZE);
-	if (space < buf_len)
-		/* discard oldest slot */
-		fwlog->tail = (fwlog->tail + ATH6KL_FWLOG_SLOT_SIZE) &
-			(ATH6KL_FWLOG_SIZE - 1);
-
-	for (i = 0; i < buf_len; i += space) {
-		space = CIRC_SPACE_TO_END(fwlog->head, fwlog->tail,
-					  ATH6KL_FWLOG_SIZE);
-
-		if ((size_t) space > buf_len - i)
-			space = buf_len - i;
-
-		memcpy(&fwlog->buf[fwlog->head], buf, space);
-		fwlog->head = (fwlog->head + space) & (ATH6KL_FWLOG_SIZE - 1);
-	}
-
-}
 
 void ath6kl_debug_fwlog_event(struct ath6kl *ar, const void *buf, size_t len)
 {
-	struct ath6kl_fwlog_slot *slot = ar->debug.fwlog_tmp;
+	struct ath6kl_fwlog_slot *slot;
+	struct sk_buff *skb;
 	size_t slot_len;
 
 	if (WARN_ON(len > ATH6KL_FWLOG_PAYLOAD_SIZE))
 		return;
 
-	spin_lock_bh(&ar->debug.fwlog_lock);
+       slot_len = sizeof(*slot) + ATH6KL_FWLOG_PAYLOAD_SIZE;
+
+       skb = alloc_skb(slot_len, GFP_KERNEL);
+       if (!skb)
+               return;
+
+       slot = (struct ath6kl_fwlog_slot *) skb_put(skb, slot_len);
 
 	slot->timestamp = cpu_to_le32(jiffies);
 	slot->length = cpu_to_le32(len);
 	memcpy(slot->payload, buf, len);
 
-	slot_len = sizeof(*slot) + len;
+	/* Need to pad each record to fixed length ATH6KL_FWLOG_PAYLOAD_SIZE */
+	memset(slot->payload + len, 0, ATH6KL_FWLOG_PAYLOAD_SIZE - len);
 
-	if (slot_len < ATH6KL_FWLOG_SLOT_SIZE)
-		memset(slot->payload + len, 0,
-		       ATH6KL_FWLOG_SLOT_SIZE - slot_len);
+       spin_lock(&ar->debug.fwlog_queue.lock);
 
-	ath6kl_debug_fwlog_add(ar, slot, ATH6KL_FWLOG_SLOT_SIZE);
+	__skb_queue_tail(&ar->debug.fwlog_queue, skb);
+	complete(&ar->debug.fwlog_completion);
 
-	spin_unlock_bh(&ar->debug.fwlog_lock);
+       /* drop oldest entries */
+       while (skb_queue_len(&ar->debug.fwlog_queue) >
+              ATH6KL_FWLOG_MAX_ENTRIES) {
+               skb = __skb_dequeue(&ar->debug.fwlog_queue);
+               kfree_skb(skb);
+       }
+
+	spin_unlock(&ar->debug.fwlog_queue.lock);
+
 }
 
-static bool ath6kl_debug_fwlog_empty(struct ath6kl *ar)
+static int ath6kl_fwlog_open(struct inode *inode, struct file *file) {
+       struct ath6kl *ar = inode->i_private;
+
+       if (ar->debug.fwlog_open)
+               return -EBUSY;
+
+       ar->debug.fwlog_open = true;
+
+       file->private_data = inode->i_private;
+       return 0;
+}
+
+static int ath6kl_fwlog_release(struct inode *inode, struct file *file)
 {
-	return CIRC_CNT(ar->debug.fwlog_buf.head,
-			ar->debug.fwlog_buf.tail,
-			ATH6KL_FWLOG_SLOT_SIZE) == 0;
+       struct ath6kl *ar = inode->i_private;
+
+       ar->debug.fwlog_open = false;
+
+       return 0;
 }
+
 
 static ssize_t ath6kl_fwlog_read(struct file *file, char __user *user_buf,
 				 size_t count, loff_t *ppos)
 {
 	struct ath6kl *ar = file->private_data;
-	struct circ_buf *fwlog = &ar->debug.fwlog_buf;
-	size_t len = 0, buf_len = count;
+	struct sk_buff *skb;
+	size_t len = 0;
+
 	ssize_t ret_cnt;
 	char *buf;
-	int ccnt;
 
-	buf = vmalloc(buf_len);
+	buf = vmalloc(count);
 	if (!buf)
 		return -ENOMEM;
 
 	/* read undelivered logs from firmware */
 	ath6kl_read_fwlogs(ar);
 
-	spin_lock_bh(&ar->debug.fwlog_lock);
+	spin_lock(&ar->debug.fwlog_queue.lock);
 
-	while (len < buf_len && !ath6kl_debug_fwlog_empty(ar)) {
-		ccnt = CIRC_CNT_TO_END(fwlog->head, fwlog->tail,
-				       ATH6KL_FWLOG_SIZE);
+	while ((skb = __skb_dequeue(&ar->debug.fwlog_queue))) {
+		if (skb->len > count - len) {
+			/* not enough space, put skb back and leave */
+			__skb_queue_head(&ar->debug.fwlog_queue, skb);
+			break;
+		}
 
-		if ((size_t) ccnt > buf_len - len)
-			ccnt = buf_len - len;
+		memcpy(buf + len, skb->data, skb->len);
+		len += skb->len;
 
-		memcpy(buf + len, &fwlog->buf[fwlog->tail], ccnt);
-		len += ccnt;
-
-		fwlog->tail = (fwlog->tail + ccnt) &
-			(ATH6KL_FWLOG_SIZE - 1);
+		kfree_skb(skb);
 	}
 
-	spin_unlock_bh(&ar->debug.fwlog_lock);
+	spin_unlock(&ar->debug.fwlog_queue.lock);
 
-	if (WARN_ON(len > buf_len))
-		len = buf_len;
-
+	/* FIXME: what to do if len == 0? */
 	ret_cnt = simple_read_from_buffer(user_buf, count, ppos, buf, len);
 
 	vfree(buf);
@@ -361,11 +357,88 @@ static ssize_t ath6kl_fwlog_read(struct file *file, char __user *user_buf,
 }
 
 static const struct file_operations fops_fwlog = {
-	.open = ath6kl_debugfs_open,
+	.open = ath6kl_fwlog_open,
 	.read = ath6kl_fwlog_read,
+	.release = ath6kl_fwlog_release,
 	.owner = THIS_MODULE,
 	.llseek = default_llseek,
 };
+
+static ssize_t ath6kl_fwlog_block_read(struct file *file,
+		char __user *user_buf,
+		size_t count,
+		loff_t *ppos)
+{
+	struct ath6kl *ar = file->private_data;
+	struct sk_buff *skb;
+	ssize_t ret_cnt;
+	size_t len = 0, not_copied;
+	char *buf;
+	int ret;
+
+	buf = vmalloc(count);
+	if (!buf)
+		return -ENOMEM;
+
+	spin_lock(&ar->debug.fwlog_queue.lock);
+
+	if (skb_queue_len(&ar->debug.fwlog_queue) == 0) {
+		/* we must init under queue lock */
+		init_completion(&ar->debug.fwlog_completion);
+
+		spin_unlock(&ar->debug.fwlog_queue.lock);
+
+		ret = wait_for_completion_interruptible(
+				&ar->debug.fwlog_completion);
+		if (ret == -ERESTARTSYS) {
+			vfree(buf);
+			return ret;
+		}
+
+		spin_lock(&ar->debug.fwlog_queue.lock);
+	}
+
+	while ((skb = __skb_dequeue(&ar->debug.fwlog_queue))) {
+		if (skb->len > count - len) {
+			/* not enough space, put skb back and leave */
+			__skb_queue_head(&ar->debug.fwlog_queue, skb);
+			break;
+		}
+
+
+		memcpy(buf + len, skb->data, skb->len);
+		len += skb->len;
+
+		kfree_skb(skb);
+	}
+
+	spin_unlock(&ar->debug.fwlog_queue.lock);
+
+	/* FIXME: what to do if len == 0? */
+	not_copied = copy_to_user(user_buf, buf, len);
+	if (not_copied != 0) {
+		ret_cnt = -EFAULT;
+		goto out;
+	}
+
+	*ppos = *ppos + len;
+
+	ret_cnt = len;
+
+out:
+	vfree(buf);
+
+	return ret_cnt;
+}
+
+static const struct file_operations fops_fwlog_block = {
+       .open = ath6kl_fwlog_open,
+       .release = ath6kl_fwlog_release,
+       .read = ath6kl_fwlog_block_read,
+       .owner = THIS_MODULE,
+       .llseek = default_llseek,
+};
+
 
 static ssize_t ath6kl_fwlog_mask_read(struct file *file, char __user *user_buf,
 				      size_t count, loff_t *ppos)
@@ -1573,9 +1646,14 @@ static ssize_t ath6kl_bgscan_int_write(struct file *file,
 				size_t count, loff_t *ppos)
 {
 	struct ath6kl *ar = file->private_data;
+	struct ath6kl_vif *vif;
 	u16 bgscan_int;
 	char buf[32];
 	ssize_t len;
+
+	vif = ath6kl_vif_first(ar);
+	if (!vif)
+		return -EIO;
 
 	len = min(count, sizeof(buf) - 1);
 	if (copy_from_user(buf, user_buf, len))
@@ -1588,10 +1666,19 @@ static ssize_t ath6kl_bgscan_int_write(struct file *file,
 	if (bgscan_int == 0)
 		bgscan_int = 0xffff;
 
-    ar->debug.bgscan_int = bgscan_int;
+	ar->debug.bgscan_int = bgscan_int;
 
-	ath6kl_wmi_scanparams_cmd(ar->wmi, 0, 0, 0, bgscan_int, 0, 0, 0, 3,
-				  0, 0, 0);
+	ath6kl_wmi_scanparams_cmd(ar->wmi, 0,
+				vif->sc_params.fg_start_period,
+				vif->sc_params.fg_end_period,
+				bgscan_int,
+				vif->sc_params.minact_chdwell_time,
+				vif->sc_params.maxact_chdwell_time,
+				vif->sc_params.pas_chdwell_time,
+				vif->sc_params.short_scan_ratio,
+				vif->sc_params.scan_ctrl_flags,
+				vif->sc_params.max_dfsch_act_time,
+				vif->sc_params.maxact_scan_per_ssid);
 
 	return count;
 }
@@ -1770,7 +1857,7 @@ static ssize_t ath6kl_rtt_write(struct file *file,
 	 if (copy_from_user(&stmrqst, user_buf+sizeof(struct nsp_header), sizeof(struct nsp_mrqst)))
 		return -EFAULT;
 
-	 if (wmi_rtt_req_meas(ar->wmi,&stmrqst))
+	 if (wmi_rtt_req_meas(ar->wmi,&stmrqst,sizeof(struct nsp_mrqst)))
 		return -EIO;
         }
         else if(ftype == NSP_RTTCONFIG)
@@ -2384,6 +2471,10 @@ static int ath6kl_parse_tx_amsdu_params(const char __user *user_buf, size_t coun
 	char *p;
 	unsigned int len;
 	int value;
+	u8 tx_amsdu_max_aggr_num;
+	u16 tx_amsdu_max_pdu_len, tx_amsdu_timeout;
+	bool tx_amsdu_seq_pkt;
+	
 
 	len = min(count, sizeof(buf) - 1);
 	if (copy_from_user(buf, user_buf, len))
@@ -2394,36 +2485,34 @@ static int ath6kl_parse_tx_amsdu_params(const char __user *user_buf, size_t coun
 	SKIP_SPACE;
 
 	sscanf(p, "%d", &value);
-	if (value == 0) 
-		value = AGGR_TX_MAX_NUM;
-	vif->aggr_cntxt->tx_amsdu_max_aggr_num = value;
+	tx_amsdu_max_aggr_num = value;
 				
 	SEEK_SPACE;
 	SKIP_SPACE;
 
 	sscanf(p, "%d", &value);
-	if (value == 0) 
-		value = AGGR_TX_MAX_PDU_SIZE;
-	else if (value < AGGR_TX_MIN_PDU_SIZE)
-		value = AGGR_TX_MIN_PDU_SIZE;
-	vif->aggr_cntxt->tx_amsdu_max_pdu_len = value;
+	tx_amsdu_max_pdu_len = value;
 
 	SEEK_SPACE;
 	SKIP_SPACE;
 
 	sscanf(p, "%d", &value);
-	if (value == 0) 
-		value = AGGR_TX_TIMEOUT;
-	vif->aggr_cntxt->tx_amsdu_timeout = value;
+	tx_amsdu_timeout = value;
 
 	SEEK_SPACE;
 	SKIP_SPACE;
 
 	sscanf(p, "%d", &value);
 	if (value) 
-		vif->aggr_cntxt->tx_amsdu_seq_pkt = true;
+		tx_amsdu_seq_pkt = true;
 	else
-		vif->aggr_cntxt->tx_amsdu_seq_pkt = false;
+		tx_amsdu_seq_pkt = false;
+
+	aggr_tx_config(vif,
+			tx_amsdu_seq_pkt,
+			tx_amsdu_max_aggr_num,
+			tx_amsdu_max_pdu_len,
+			tx_amsdu_timeout);
 
 	return 0;
 }
@@ -2467,9 +2556,10 @@ static ssize_t ath6kl_tx_amsdu_params_read(struct file *file,
 		vif = ath6kl_get_vif_by_index(ar, i);
 		if ((vif) &&
 			(vif->aggr_cntxt)) {
-			len += scnprintf(buf + len, sizeof(buf) - len, "DEV-%d %s max_num: %d, max_len: %d, timeout = %d ms, seq_pkt %s\n",
+			len += scnprintf(buf + len, sizeof(buf) - len, "DEV-%d %s max_aggr_len: %d max_aggr_num: %d, max_pdu_len: %d, timeout = %d ms, seq_pkt %s\n",
 					i,
 					(vif->aggr_cntxt->tx_amsdu_enable == true ? "Enable" : "Disable"),
+					vif->aggr_cntxt->tx_amsdu_max_aggr_len,
 					vif->aggr_cntxt->tx_amsdu_max_aggr_num,
 					vif->aggr_cntxt->tx_amsdu_max_pdu_len,
 					vif->aggr_cntxt->tx_amsdu_timeout,
@@ -2482,14 +2572,15 @@ static ssize_t ath6kl_tx_amsdu_params_read(struct file *file,
 						conn->mac[0],conn->mac[1],conn->mac[2],conn->mac[3],conn->mac[4],conn->mac[5]);
 				for (k = 0; k < NUM_OF_TIDS; k++) {
 					txtid = AGGR_GET_TXTID(conn->aggr_conn_cntxt, k);
-					len += scnprintf(buf + len, sizeof(buf) - len, "   %d-%d AMSDU: %d PDU: %d TIMEOUT/FLUSH/NULL: %d/%d/%d \n",
+					len += scnprintf(buf + len, sizeof(buf) - len, "   %d-%d AMSDU: %d PDU: %d TIMEOUT/FLUSH/NULL/OVERFLOW: %d/%d/%d/%d \n",
 							txtid->tid,
 							txtid->aid,
 							txtid->num_amsdu,
 							txtid->num_pdu,
 							txtid->num_timeout,
 							txtid->num_flush,
-							txtid->num_tx_null);
+							txtid->num_tx_null,
+							txtid->num_overflow);
 				}
 			}
 		}
@@ -3062,19 +3153,200 @@ static const struct file_operations fops_ap_ps_stat = {
 	.llseek = default_llseek,
 };
 
-int ath6kl_debug_init(struct ath6kl *ar)
+static int ath6kl_parse_rx_aggr_params(const char __user *user_buf, size_t count,
+				struct ath6kl_vif *vif)
 {
-	ar->debug.fwlog_buf.buf = vmalloc(ATH6KL_FWLOG_SIZE);
-	if (ar->debug.fwlog_buf.buf == NULL)
-		return -ENOMEM;
+	char buf[64];
+	char *p;
+	unsigned int len;
+	int value;
+	u16 rx_aggr_timeout;
+	
 
-	ar->debug.fwlog_tmp = kmalloc(ATH6KL_FWLOG_SLOT_SIZE, GFP_KERNEL);
-	if (ar->debug.fwlog_tmp == NULL) {
-		vfree(ar->debug.fwlog_buf.buf);
-		return -ENOMEM;
+	len = min(count, sizeof(buf) - 1);
+	if (copy_from_user(buf, user_buf, len))
+		return -EFAULT;
+
+	p = buf;
+
+	SKIP_SPACE;
+
+	sscanf(p, "%d", &value);
+	rx_aggr_timeout = value;
+				
+	aggr_config(vif, rx_aggr_timeout);
+
+	return 0;
+}
+
+/* File operation functions for RX Aggr. Params */
+static ssize_t ath6kl_rx_aggr_params_write(struct file *file,
+				const char __user *user_buf,
+				size_t count, loff_t *ppos)
+{
+	struct ath6kl *ar = file->private_data;
+	struct ath6kl_vif *vif;
+	int i, ret;
+
+	for (i = 0; i < ar->vif_max; i++) {
+		vif = ath6kl_get_vif_by_index(ar, i);
+		if ((vif) &&
+			(vif->aggr_cntxt)) {
+			ret = ath6kl_parse_rx_aggr_params(user_buf, count, vif);
+
+			if (ret)
+				return ret;
+		}
 	}
 
-	spin_lock_init(&ar->debug.fwlog_lock);
+	return count;
+}
+
+static ssize_t ath6kl_rx_aggr_params_read(struct file *file, 
+				char __user *user_buf,
+				size_t count, loff_t *ppos)
+{
+	struct ath6kl *ar = file->private_data;
+	struct ath6kl_vif *vif;
+	static u8 buf[512];
+	unsigned int len = 0;
+	int i;
+
+	for (i = 0; i < ar->vif_max; i++) {
+		vif = ath6kl_get_vif_by_index(ar, i);
+		if ((vif) &&
+			(vif->aggr_cntxt)) {
+			len += scnprintf(buf + len, sizeof(buf) - len, "DEV-%d rx_aggr_timeout = %d ms\n",
+					i,
+					vif->aggr_cntxt->rx_aggr_timeout);
+		}
+	}
+
+	return simple_read_from_buffer(user_buf, count, ppos, buf, len);
+}
+
+/* debug fs for RX Aggr. Params */
+static const struct file_operations fops_rx_aggr_params = {
+	.read = ath6kl_rx_aggr_params_read,
+	.write = ath6kl_rx_aggr_params_write,
+	.open = ath6kl_debugfs_open,
+	.owner = THIS_MODULE,
+	.llseek = default_llseek,
+};
+
+/* File operation functions for SCAN Params */
+static int ath6kl_parse_scan_params(const char __user *user_buf, size_t count,
+					int *maxact_chdwell_time, 
+					int *pas_chdwell_time, 
+					int *maxact_scan_per_ssid)
+{
+	char buf[16];
+	char *p;
+	int value;
+	int len;
+
+	len = min(count, sizeof(buf) - 1);
+	if (copy_from_user(buf, user_buf, len))
+		return -EFAULT;
+
+	p = buf;
+
+	SKIP_SPACE;
+
+	sscanf(p, "%d", &value);
+	if (value < ATH6KL_SCAN_ACT_DEWELL_TIME)
+		value = ATH6KL_SCAN_ACT_DEWELL_TIME;
+	*maxact_chdwell_time = value;
+
+	SEEK_SPACE;
+	SKIP_SPACE;
+
+	sscanf(p, "%d", &value);
+	if (value < ATH6KL_SCAN_PAS_DEWELL_TIME)
+		value = ATH6KL_SCAN_PAS_DEWELL_TIME;
+	*pas_chdwell_time = value;
+	
+	SEEK_SPACE;
+	SKIP_SPACE;
+
+	sscanf(p, "%d", &value);
+	if (value <= ATH6KL_SCAN_PROBE_PER_SSID)
+		value = 1;
+	*maxact_scan_per_ssid = value;	
+
+	return 0;
+}
+
+static ssize_t ath6kl_scan_params_write(struct file *file,
+                                const char __user *user_buf,
+                                size_t count, loff_t *ppos)
+{
+	struct ath6kl *ar = file->private_data;
+	struct ath6kl_vif *vif;
+	int i, ret;
+	int maxact_chdwell_time, pas_chdwell_time, maxact_scan_per_ssid;
+
+	for (i = 0; i < ar->vif_max; i++) {
+		vif = ath6kl_get_vif_by_index(ar, i);
+		if (vif) {
+			ret = ath6kl_parse_scan_params(user_buf, count, 
+							&maxact_chdwell_time, 
+							&pas_chdwell_time, 
+							&maxact_scan_per_ssid);
+			if (!ret) {
+				vif->sc_params.maxact_chdwell_time = maxact_chdwell_time;
+				vif->sc_params.pas_chdwell_time = pas_chdwell_time;
+				vif->sc_params.maxact_scan_per_ssid = maxact_scan_per_ssid;
+			} else 
+				return ret;
+		}
+	}
+
+	return count;
+}
+
+static ssize_t ath6kl_scan_params_read(struct file *file, 
+				char __user *user_buf,
+				size_t count, loff_t *ppos)
+{
+	struct ath6kl *ar = file->private_data;
+	struct ath6kl_vif *vif;
+	static u8 buf[512];
+	unsigned int len = 0;
+	int i;
+
+	for (i = 0; i < ar->vif_max; i++) {
+		vif = ath6kl_get_vif_by_index(ar, i);
+		if (vif){
+			len += scnprintf(buf + len, sizeof(buf) - len, 
+				"DEV-%d Flags = 0x%x ActDwellTime = %d PasDwellTime = %d ScanPerSsid = %d \n",
+					i,
+					vif->sc_params.scan_ctrl_flags,
+					(vif->sc_params.maxact_chdwell_time == 0 ? 
+						ATH6KL_SCAN_ACT_DEWELL_TIME : vif->sc_params.maxact_chdwell_time),
+					(vif->sc_params.pas_chdwell_time == 0 ? 
+						ATH6KL_SCAN_PAS_DEWELL_TIME : vif->sc_params.pas_chdwell_time),
+					(vif->sc_params.maxact_scan_per_ssid == 0 ? 
+						ATH6KL_SCAN_PROBE_PER_SSID : vif->sc_params.maxact_scan_per_ssid));
+		}
+	}
+
+	return simple_read_from_buffer(user_buf, count, ppos, buf, len);
+}
+
+/* debug fs for SCAN Params */
+static const struct file_operations fops_scan_params = {
+	.read = ath6kl_scan_params_read,
+	.write = ath6kl_scan_params_write,
+	.open = ath6kl_debugfs_open,
+	.owner = THIS_MODULE,
+	.llseek = default_llseek,
+};
+
+int ath6kl_debug_init(struct ath6kl *ar)
+{
+	skb_queue_head_init(&ar->debug.fwlog_queue);
+	init_completion(&ar->debug.fwlog_completion);
 
 	/*
 	 * Actually we are lying here but don't know how to read the mask
@@ -3084,11 +3356,8 @@ int ath6kl_debug_init(struct ath6kl *ar)
 
 	ar->debugfs_phy = debugfs_create_dir("ath6kl",
 					     ar->wiphy->debugfsdir);
-	if (!ar->debugfs_phy) {
-		vfree(ar->debug.fwlog_buf.buf);
-		kfree(ar->debug.fwlog_tmp);
+	if (!ar->debugfs_phy)
 		return -ENOMEM;
-	}
 
 	debugfs_create_file("tgt_stats", S_IRUSR, ar->debugfs_phy, ar,
 			    &fops_tgt_stats);
@@ -3101,6 +3370,9 @@ int ath6kl_debug_init(struct ath6kl *ar)
 
 	debugfs_create_file("fwlog", S_IRUSR, ar->debugfs_phy, ar,
 			    &fops_fwlog);
+
+       debugfs_create_file("fwlog_block", S_IRUSR, ar->debugfs_phy, ar,
+                           &fops_fwlog_block);
 
 	debugfs_create_file("fwlog_mask", S_IRUSR | S_IWUSR, ar->debugfs_phy,
 			    ar, &fops_fwlog_mask);
@@ -3213,14 +3485,20 @@ int ath6kl_debug_init(struct ath6kl *ar)
 	debugfs_create_file("ap_ps_stat", S_IRUSR,
 			    ar->debugfs_phy, ar, &fops_ap_ps_stat);
 
+	debugfs_create_file("rx_aggr_params", S_IRUSR | S_IWUSR,
+			    ar->debugfs_phy, ar, &fops_rx_aggr_params);
+
+	debugfs_create_file("scan_params", S_IRUSR | S_IWUSR,
+			    ar->debugfs_phy, ar, &fops_scan_params);
+
 	return 0;
 }
 
 
 void ath6kl_debug_cleanup(struct ath6kl *ar)
 {
-	vfree(ar->debug.fwlog_buf.buf);
-	kfree(ar->debug.fwlog_tmp);
+	skb_queue_purge(&ar->debug.fwlog_queue);
+	complete(&ar->debug.fwlog_completion);
 	kfree(ar->debug.roam_tbl);
 }
 

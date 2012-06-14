@@ -26,12 +26,16 @@ S_RTTM_CONTEXT *g_pRttmContext;
 int rttm_init(void* ar)
 {
    S_RTTM_CONTEXT *prttm=NULL;
+   ath6kl_dbg(ATH6KL_DBG_RTT,"rttm init ");
    prttm=kmalloc(sizeof(S_RTTM_CONTEXT),GFP_KERNEL);
    if(NULL==prttm)
     return -ENOMEM;
    memset(prttm,0,sizeof(S_RTTM_CONTEXT));
    if(NULL==prttm->cirbuf)
+   {
+    ath6kl_err("RTT Init Failed to AllocMem for rttm context \n");
     return -ENOMEM;
+   }
    prttm->pvreadptr = prttm->cirbuf;
    prttm->pvbufptr = prttm->cirbuf;
    prttm->ar =ar;
@@ -81,6 +85,7 @@ int rttm_recv(void *buf,u32 len)
 {
    S_RTTM_CONTEXT *prttm=NULL;
    prttm=DEV_GETRTT_HDL();
+   ath6kl_dbg(ATH6KL_DBG_RTT,"RTT Resp Type : %d Len : %d ",((struct nsp_mresphdr *)buf)->response_type,len);
    if(prttm->burst==0)
    {
      
@@ -120,6 +125,7 @@ int rttm_recv(void *buf,u32 len)
       rttm_getbuf(&data,&datalen);
       if(data && datalen)
       {
+      ath6kl_dbg(ATH6KL_DBG_RTT,"NLSend  Len : %d ",datalen);
       ath_netlink_send(data,datalen);
       }
       
@@ -169,10 +175,9 @@ void DumpRttResp(void * data)
 }
 
 
-int rttm_issue_request(void *buf)
+int rttm_issue_request(void *buf,u32 len)
 {
    S_RTTM_CONTEXT *prttm=NULL;
-   struct nsp_mrqst stmrqst;
    struct nsp_rtt_config strttcfg;
    struct nsp_header hdr;
    u32 ftype;
@@ -182,17 +187,23 @@ int rttm_issue_request(void *buf)
    ar = prttm->ar;
   memcpy(&hdr,buf,NSP_HDR_LEN);
   ftype = hdr.frame_type;
+   ath6kl_dbg(ATH6KL_DBG_RTT,"RTT Req Type : %d Len : %d ",ftype,len);
    if(ftype == NSP_MRQST)
    {
-     memcpy(&stmrqst ,buf + NSP_HDR_LEN,sizeof(struct nsp_mrqst));
-     if (wmi_rtt_req_meas(ar->wmi,&stmrqst))
+     if (wmi_rtt_req_meas(ar->wmi,buf + NSP_HDR_LEN,len))
+     {
+        ath6kl_dbg(ATH6KL_DBG_RTT,"RTT Req Fail ");
 	return -EIO;
+     }
    }
    else if(ftype == NSP_RTTCONFIG)
    {
      memcpy(&strttcfg ,buf + NSP_HDR_LEN,sizeof(struct nsp_rtt_config));
      if (wmi_rtt_config(ar->wmi,&strttcfg))
+     {
+        ath6kl_dbg(ATH6KL_DBG_RTT,"RTT Req Fail ");
         return -EIO;
+     }
    }
 
   return 0;

@@ -641,7 +641,7 @@ static void wifi_diag_event_process(struct work_struct *work)
 					if (ptx_frame_event_data->frame_data != 0) {
                                         	printk("tx wh[0]=%x wh[%d]=%x\n",
                                                 	ptx_frame_event_data->frame_data[0],
-                                                	pwifi_diag_event->len,
+                                                	ptx_frame_event_data->frame_length-1,
                                                 	ptx_frame_event_data->frame_data[ptx_frame_event_data->frame_length-1]);
                                 	}
 
@@ -662,7 +662,7 @@ static void wifi_diag_event_process(struct work_struct *work)
 					if (prx_frame_event_data->frame_data != 0) {
 						printk("rx wh[0]=%x wh[%d]=%x\n", 
 							prx_frame_event_data->frame_data[0], 
-							pwifi_diag_event->len, 
+							prx_frame_event_data->frame_length-1, 
 							prx_frame_event_data->frame_data[prx_frame_event_data->frame_length-1]);
 					}
 
@@ -793,6 +793,9 @@ wifi_diag_mac_tx_frame_event(struct ath6kl_vif *vif, struct ath_pktlog_txstatus 
 		memset(ptx_frame_event_data->frame_data, 0, 512);
 		/* skip 2 pad bytes after qos header, assume there are no addr4 */
 		if (IEEE80211_QOS_HAS_SEQ(framectrl)) {
+			tx_buf_len -= IEEE80211_QOS_PADLEN;
+			pwifi_diag_txframe_event->len -= IEEE80211_QOS_PADLEN;
+			ptx_frame_event_data->frame_length -= IEEE80211_QOS_PADLEN;
 			memcpy(ptx_frame_event_data->frame_data, txstatus_log->buf, IEEE80211_QOS_HEADERLEN);
 			memcpy(ptx_frame_event_data->frame_data+IEEE80211_QOS_HEADERLEN, 
 				txstatus_log->buf+IEEE80211_QOS_HEADERLEN+IEEE80211_QOS_PADLEN, tx_buf_len - IEEE80211_QOS_HEADERLEN);	

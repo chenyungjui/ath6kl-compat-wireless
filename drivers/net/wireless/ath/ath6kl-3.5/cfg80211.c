@@ -134,6 +134,9 @@ static struct ieee80211_supported_band ath6kl_band_2ghz = {
 							IEEE80211_HT_CAP_SM_PS,                       
 		.ampdu_factor   = IEEE80211_HT_MAX_AMPDU_64K,
 		.ampdu_density  = IEEE80211_HT_MPDU_DENSITY_8,
+		.mcs = { 
+			.rx_mask = { 0xff, 0xff, 0, 0, 0, 0, 0, 0, 0, 0},
+		},
 	},	
 };
 
@@ -151,6 +154,9 @@ static struct ieee80211_supported_band ath6kl_band_5ghz = {
 							IEEE80211_HT_CAP_SM_PS,                       
 		.ampdu_factor   = IEEE80211_HT_MAX_AMPDU_64K,
 		.ampdu_density  = IEEE80211_HT_MPDU_DENSITY_8,
+		.mcs = { 
+			.rx_mask = { 0xff, 0xff, 0, 0, 0, 0, 0, 0, 0, 0},
+		},
 	},
 };
 
@@ -1007,6 +1013,7 @@ static int ath6kl_cfg80211_scan(struct wiphy *wiphy, struct net_device *ndev,
 	u16 *channels = NULL;
 	int ret = 0;
 	u32 force_fg_scan = 0;
+	u8 skip_chan_num = 0;
 
 	if (!ath6kl_cfg80211_ready(vif))
 		return -EIO;
@@ -1076,8 +1083,44 @@ static int ath6kl_cfg80211_scan(struct wiphy *wiphy, struct net_device *ndev,
 			n_channels = 0;
 		}
 
-		for (i = 0; i < n_channels; i++)
-			channels[i] = request->channels[i]->center_freq;
+		if (n_channels) {
+			switch (vif->scanband_type) {
+			case SCANBAND_TYPE_CHAN_ONLY:
+				/* FIXME : check if channel is valid or not first. */
+				channels[0] = vif->scanband_chan;
+				ath6kl_info("Only signal channel scan, channel %d\n", channels[0]);
+				n_channels = 1;
+				break;
+			case SCANBAND_TYPE_5G:
+				ath6kl_info("Only 5G channels scan, channel list - ");
+				for (i = 0; i < n_channels; i++) {
+					if (request->channels[i]->center_freq <= 2484) {
+						skip_chan_num++;
+						continue;
+					}
+					channels[i - skip_chan_num] = request->channels[i]->center_freq;
+					ath6kl_info("%d ", channels[i - skip_chan_num]);
+				}
+				n_channels -= skip_chan_num;
+				break;
+			case SCANBAND_TYPE_2G:
+				ath6kl_info("Only 2G channels scan, channel list - ");
+				for (i = 0; i < n_channels; i++) {
+					if (request->channels[i]->center_freq > 2484) {
+						skip_chan_num++;
+						continue;
+					}
+					channels[i - skip_chan_num] = request->channels[i]->center_freq;
+					ath6kl_info("%d ", channels[i - skip_chan_num]);
+				}
+				n_channels -= skip_chan_num;
+				break;
+			default:
+				for (i = 0; i < n_channels; i++)
+					channels[i] = request->channels[i]->center_freq;
+				break;
+			}
+		}
 	}
 
 	if (test_bit(CONNECTED, &vif->flags))
@@ -1100,6 +1143,24 @@ static int ath6kl_cfg80211_scan(struct wiphy *wiphy, struct net_device *ndev,
 			up(&ar->sem);
 			return -EINTR;
 		}
+	}
+
+	ret = ath6kl_wmi_scanparams_cmd(ar->wmi, vif->fw_vif_idx,
+				vif->sc_params.fg_start_period,
+				vif->sc_params.fg_end_period,
+				vif->sc_params.bg_period,
+				vif->sc_params.minact_chdwell_time,
+				vif->sc_params.maxact_chdwell_time,
+				vif->sc_params.pas_chdwell_time,
+				vif->sc_params.short_scan_ratio,
+				vif->sc_params.scan_ctrl_flags,
+				vif->sc_params.max_dfsch_act_time,
+				vif->sc_params.maxact_scan_per_ssid);
+
+	if (ret) {
+		ath6kl_err("ath6kl_cfg80211_scan: set scan parameter failed\n");
+		up(&ar->sem);
+		return ret;
 	}
 
 	ret = ath6kl_wmi_startscan_cmd(ar->wmi, vif->fw_vif_idx, WMI_LONG_SCAN,
@@ -2173,10 +2234,17 @@ static int ath6kl_flush_pmksa(struct wiphy *wiphy, struct net_device *netdev)
 static int ath6kl_wow_suspend(struct ath6kl *ar, struct cfg80211_wowlan *wow)
 {
 	struct ath6kl_vif *vif;
-	int ret, pos, left;
+	int ret, left;
+#ifndef CONFIG_ANDROID
+	int pos;
 	u32 filter = 0;
 	u16 i;
 	u8 mask[WOW_MASK_SIZE];
+#endif
+		
+	/*if already in wow state just return without error*/
+	if(ar->state == ATH6KL_STATE_WOW)
+		return 0;
 
 	vif = ath6kl_vif_first(ar);
 	if (!vif)
@@ -2188,6 +2256,16 @@ static int ath6kl_wow_suspend(struct ath6kl *ar, struct cfg80211_wowlan *wow)
 	if (!test_bit(CONNECTED, &vif->flags))
 		return -EINVAL;
 
+#ifdef ATH6KL_SUPPORT_WLAN_HB
+	if (ar->wlan_hb_enable != 0) {
+		if (ath6kl_wmi_set_heart_beat_params(ar->wmi, vif->fw_vif_idx,
+			ar->wlan_hb_enable)) {
+			ath6kl_warn("set wlan heart beat params failed in suspend\n");
+			return -EINVAL;
+		}
+	}
+#endif
+#ifndef CONFIG_ANDROID
 	/* Clear existing WOW patterns */
 	for (i = 0; i < WOW_MAX_FILTERS_PER_LIST; i++)
 		ath6kl_wmi_del_wow_pattern_cmd(ar->wmi, vif->fw_vif_idx,
@@ -2258,6 +2336,7 @@ static int ath6kl_wow_suspend(struct ath6kl *ar, struct cfg80211_wowlan *wow)
 					  WOW_HOST_REQ_DELAY);
 	if (ret)
 		return ret;
+#endif /*!CONFIG_ANDROID*/
 
 	clear_bit(HOST_SLEEP_MODE_CMD_PROCESSED, &vif->flags);
 		
@@ -2421,6 +2500,16 @@ int ath6kl_cfg80211_resume(struct ath6kl *ar)
 			ath6kl_warn("wow mode resume failed: %d\n", ret);
 			return ret;
 		}
+
+#ifdef ATH6KL_SUPPORT_WLAN_HB
+		ar->wlan_hb_enable = 0;
+		ret = ath6kl_wmi_set_heart_beat_params(ar->wmi, vif->fw_vif_idx,
+				ar->wlan_hb_enable);
+		if (ret) {
+			ath6kl_warn("set wlan heart beat params failed in resume: %d\n", ret);
+			return ret;
+		}
+#endif
 
 		ar->state = ATH6KL_STATE_ON;
 		break;
@@ -3022,13 +3111,7 @@ static int ath6kl_remain_on_channel(struct wiphy *wiphy,
 		ath6kl_err("busy, couldn't get access\n");
 		return -ERESTARTSYS;
 	}
-	
-	if(test_bit(ROC_ONGOING, &vif->flags)){
-		up(&ar->sem);
-		ath6kl_dbg(ATH6KL_DBG_WMI, "%s cancel due to previous command not canceled", __func__);
-		return -EBUSY;
-	}
-	
+
 	/* TODO: if already pending or ongoing remain-on-channel,
 	 * return -EBUSY */
 	id = ++vif->last_roc_id;
@@ -3247,6 +3330,151 @@ int	ath6kl_set_gtk_rekey_offload(struct wiphy *wiphy, struct net_device *dev,
 	return ret;
 }
 
+#ifdef CONFIG_ANDROID
+int ath6kl_set_wow_mode(struct wiphy *wiphy, struct cfg80211_wowlan *wow)
+{
+	struct ath6kl_vif *vif;
+	int ret = 0, pos, i;
+	struct ath6kl *ar = (struct ath6kl *)wiphy_priv(wiphy);
+	u32 filter = 0;
+	u8 mask[WOW_MASK_SIZE];
+
+	ath6kl_dbg(ATH6KL_DBG_WOWLAN, "%s: +++\n",__FUNCTION__);
+	
+	vif = ath6kl_vif_first(ar);
+	if (!vif) {
+		ret = -EIO;
+		goto FAIL;
+	}
+	
+	if (!ath6kl_cfg80211_ready(vif)) {
+		ret = -EIO;
+		goto FAIL;
+	}
+
+	if (WARN_ON(!wow))
+		goto FAIL;
+
+	/* Clear existing WOW patterns */
+	for (i = 0; i < WOW_MAX_FILTERS_PER_LIST; i++)
+		ath6kl_wmi_del_wow_pattern_cmd(ar->wmi, vif->fw_vif_idx,
+					       WOW_LIST_ID, i);
+
+	/* Configure new WOW patterns */
+	for (i = 0; i < wow->n_patterns; i++) {
+
+		if( ath6kl_wow_ext ) {
+			ret = ath6kl_wmi_add_wow_ext_pattern_cmd(ar->wmi,
+						vif->fw_vif_idx, WOW_LIST_ID,
+						wow->patterns[i].pattern_len,
+						i,
+						wow->patterns[i].pattern, wow->patterns[i].mask);
+			/* filter for wow ext pattern */
+			filter |= WOW_FILTER_OPTION_PATTERNS;
+		} else {
+			/*
+			 * Convert given nl80211 specific mask value to equivalent
+			 * driver specific mask value and send it to the chip along
+			 * with patterns. For example, If the mask value defined in
+			 * struct cfg80211_wowlan is 0xA (equivalent binary is 1010),
+			 * then equivalent driver specific mask value is
+			 * "0xFF 0x00 0xFF 0x00".
+			 */
+			memset(&mask, 0, sizeof(mask));
+			for (pos = 0; pos < wow->patterns[i].pattern_len; pos++) {
+				if (wow->patterns[i].mask[pos / 8] & (0x1 << (pos % 8)))
+					mask[pos] = 0xFF;
+			}
+			/*
+			 * Note: Pattern's offset is not passed as part of wowlan
+			 * parameter from CFG layer. So it's always passed as ZERO
+			 * to the firmware. It means, given WOW patterns are always
+			 * matched from the first byte of received pkt in the firmware.
+			 */
+			ret = ath6kl_wmi_add_wow_pattern_cmd(ar->wmi,
+						vif->fw_vif_idx, WOW_LIST_ID,
+						wow->patterns[i].pattern_len,
+						0 /* pattern offset */,
+						wow->patterns[i].pattern, mask);
+		}
+		if (ret)
+			return ret;
+	}
+
+	if (wow->disconnect) {
+		ath6kl_dbg(ATH6KL_DBG_WOWLAN, "filter: WOW_FILTER_OPTION_NWK_DISASSOC\n");
+		filter |= WOW_FILTER_OPTION_NWK_DISASSOC;
+	}
+
+	if (wow->magic_pkt) {
+		ath6kl_dbg(ATH6KL_DBG_WOWLAN, "filter: WOW_FILTER_OPTION_MAGIC_PACKET\n");
+		filter |= WOW_FILTER_OPTION_MAGIC_PACKET;
+	}
+	if (wow->gtk_rekey_failure) {
+		ath6kl_dbg(ATH6KL_DBG_WOWLAN, 
+			"filter: WOW_FILTER_OPTION_OFFLOAD_GTK/GTK_ERROR\n");
+		filter |= (WOW_FILTER_OPTION_EAP_REQ | 
+					WOW_FILTER_OPTION_8021X_4WAYHS |
+					WOW_FILTER_OPTION_GTK_ERROR |
+					WOW_FILTER_OPTION_OFFLOAD_GTK);
+	}
+	if (wow->eap_identity_req) {
+		ath6kl_dbg(ATH6KL_DBG_WOWLAN, "filter: WOW_FILTER_OPTION_EAP_REQ\n");
+		filter |= WOW_FILTER_OPTION_EAP_REQ;
+		
+	}
+	
+	if (wow->four_way_handshake) {
+		ath6kl_dbg(ATH6KL_DBG_WOWLAN, "filter: WOW_FILTER_OPTION_8021X_4WAYHS\n");
+		filter |= WOW_FILTER_OPTION_8021X_4WAYHS;
+	}
+#if 0
+	if (wow->rfkill_release) {
+		ath6kl_dbg(ATH6KL_DBG_WOWLAN, "filter: WOW_FILTER_OPTION_NWK_DISASSOC\n");
+	}
+#endif
+
+	if( filter || wow->n_patterns) {
+		ath6kl_dbg(ATH6KL_DBG_WOWLAN, "Set filter: 0x%x ", filter);
+		ret = ath6kl_wmi_set_wow_mode_cmd(ar->wmi, vif->fw_vif_idx,
+							  ATH6KL_WOW_MODE_ENABLE,
+							  filter,
+							  WOW_HOST_REQ_DELAY);
+	}
+
+	set_bit(WLAN_WOW_ENABLE, &vif->flags);
+
+FAIL:
+	ath6kl_dbg(ATH6KL_DBG_WOWLAN, "%s: --- return %d\n",__FUNCTION__, ret);
+	return ret;
+}
+
+int ath6kl_clear_wow_mode(struct wiphy *wiphy)
+{
+	struct ath6kl_vif *vif;
+	struct ath6kl *ar = wiphy_priv(wiphy);		
+	int ret = 0;
+	
+	ath6kl_dbg(ATH6KL_DBG_WOWLAN, "%s: +++\n",__FUNCTION__);
+
+	vif = ath6kl_vif_first(ar);
+	if (!vif)
+		return -EIO;
+	ret = ath6kl_wmi_set_wow_mode_cmd(ar->wmi, vif->fw_vif_idx,
+						  ATH6KL_WOW_MODE_DISABLE,
+						  0,
+						  0);
+
+	ret = ath6kl_wmi_set_host_sleep_mode_cmd(ar->wmi, vif->fw_vif_idx,
+						 ATH6KL_HOST_MODE_AWAKE);
+
+	clear_bit(WLAN_WOW_ENABLE, &vif->flags);
+	ath6kl_dbg(ATH6KL_DBG_WOWLAN, "%s: ---\n",__FUNCTION__);
+	
+	return ret;
+}
+#endif /*CONFIG_ANDROID*/
+
 static const struct ieee80211_txrx_stypes
 ath6kl_mgmt_stypes[NUM_NL80211_IFTYPES] = {
 	[NL80211_IFTYPE_STATION] = {
@@ -3302,6 +3530,10 @@ static struct cfg80211_ops ath6kl_cfg80211_ops = {
 #if defined(CONFIG_PM) && (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,34))
 	.suspend = __ath6kl_cfg80211_suspend,
 	.resume = __ath6kl_cfg80211_resume,
+#ifdef CONFIG_ANDROID
+	.set_wow_mode = ath6kl_set_wow_mode,
+	.clr_wow_mode = ath6kl_clear_wow_mode,
+#endif	
 #endif
 	.set_rekey_data = ath6kl_set_gtk_rekey_offload,
 	.set_channel = ath6kl_set_channel,
@@ -3471,14 +3703,30 @@ int ath6kl_register_ieee80211_hw(struct ath6kl *ar)
 		}
 	}
 
+	/* update MCS rate mask. */
+	if (!(ar->target_subtype & TARGET_SUBTYPE_2SS)) {
+		ath6kl_band_2ghz.ht_cap.mcs.rx_mask[1] = 0;
+		ath6kl_band_5ghz.ht_cap.mcs.rx_mask[1] = 0;
+	}
+
+	/* update 2G-HT40 capability. */
+	if (!(ar->target_subtype & TARGET_SUBTYPE_HT40)) {
+		ath6kl_band_2ghz.ht_cap.cap &= ~IEEE80211_HT_CAP_SUP_WIDTH_20_40;
+		ath6kl_band_2ghz.ht_cap.cap &= ~IEEE80211_HT_CAP_SGI_40;
+		ath6kl_band_2ghz.ht_cap.cap &= ~IEEE80211_HT_CAP_DSSSCCK40;
+	}
+
 	/* max num of ssids that can be probed during scanning */
 	wiphy->max_scan_ssids = MAX_PROBED_SSID_INDEX;
 	wiphy->max_scan_ie_len = 1000; /* FIX: what is correct limit? */
-		wiphy->bands[IEEE80211_BAND_2GHZ] = &ath6kl_band_2ghz;
-	if (!ath6kl_mod_debug_quirks(ar, ATH6KL_MODULE_DISABLE_5G))
+	wiphy->bands[IEEE80211_BAND_2GHZ] = &ath6kl_band_2ghz;
+	if ((!ath6kl_mod_debug_quirks(ar, ATH6KL_MODULE_DISABLE_5G)) ||
+	    (ar->target_subtype & TARGET_SUBTYPE_DUAL))
 		wiphy->bands[IEEE80211_BAND_5GHZ] = &ath6kl_band_5ghz;
 	else {
-		ath6kl_info("Disable 5G support!\n");
+		ath6kl_info("Disable 5G support by %s!\n",
+				(ath6kl_mod_debug_quirks(ar, ATH6KL_MODULE_DISABLE_5G) ? 
+					"driver" : "board-data"));
 	}
 	wiphy->signal_type = CFG80211_SIGNAL_TYPE_MBM;
 
@@ -3572,6 +3820,9 @@ static int ath6kl_init_if_data(struct ath6kl_vif *vif)
 		    (unsigned long) vif->ndev);
 	set_bit(WMM_ENABLED, &vif->flags);
 	spin_lock_init(&vif->if_lock);
+
+	vif->scanband_chan = 0;
+	vif->scanband_type = SCANBAND_TYPE_ALL;
 
 	return 0;
 }

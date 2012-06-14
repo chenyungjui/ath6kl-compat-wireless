@@ -45,7 +45,7 @@
 #define TO_STR(symbol) MAKE_STR(symbol)
 
 /* The script (used for release builds) modifies the following line. */
-#define __BUILD_VERSION_ 3.5.0.56
+#define __BUILD_VERSION_ 3.5.0.67
 
 #define DRV_VERSION		TO_STR(__BUILD_VERSION_)
 
@@ -90,6 +90,10 @@
 /* Channel dwell time in fg scan */
 #define ATH6KL_FG_SCAN_INTERVAL           100 /* in msec */
 
+#define ATH6KL_SCAN_ACT_DEWELL_TIME	20 /* in ms. */
+#define ATH6KL_SCAN_PAS_DEWELL_TIME	50 /* in ms. */
+#define ATH6KL_SCAN_PROBE_PER_SSID	1
+
 /* includes also the null byte */
 #define ATH6KL_FIRMWARE_MAGIC               "QCA-ATH6KL"
 
@@ -127,7 +131,7 @@ struct ath6kl_fw_ie {
 	u8 data[0];
 };
 
-#define ATH6KL_IOCTL_STANDARD01		(SIOCDEVPRIVATE+1)		/* Reserved for Android PNO and vendor specific functions */
+#define ATH6KL_IOCTL_STANDARD01		(SIOCDEVPRIVATE+1)		/* Android privacy command */
 #define ATH6KL_IOCTL_STANDARD02		(SIOCDEVPRIVATE+2)		/* Standard do_ioctl() ioctl interface */
 #define ATH6KL_IOCTL_STANDARD12		(SIOCDEVPRIVATE+12)		/* hole, please reserved */
 #define ATH6KL_IOCTL_STANDARD13		(SIOCDEVPRIVATE+13)		/* TX99 */
@@ -157,6 +161,11 @@ struct ath6kl_ioctl_cmd {
 	u32 subcmd;
 	u32 options;
 };
+
+/* Android-specific IOCTL */
+#define ANDROID_SETBAND_ALL		0
+#define ANDROID_SETBAND_5G		1
+#define ANDROID_SETBAND_2G		2
 
 struct ath6kl_android_wifi_priv_cmd {
 	char *buf;
@@ -244,7 +253,7 @@ struct ath6kl_android_wifi_priv_cmd {
 #define AR6004_HW_1_3_SOFTMAC_FILE            "ath6k/AR6004/hw1.3/softmac.bin"
 
 /* AR6004 1.6 definitions */
-#define AR6004_HW_1_6_VERSION                 0x31c808c1
+#define AR6004_HW_1_6_VERSION                 0x31c808f5
 #define AR6004_HW_1_6_FW_DIR			"ath6k/AR6004/hw1.6"
 #define AR6004_HW_1_6_FIRMWARE_2_FILE         "fw-2.bin"
 #define AR6004_HW_1_6_FIRMWARE_FILE           "fw.ram.bin"
@@ -268,6 +277,8 @@ struct ath6kl_android_wifi_priv_cmd {
 
 #define BDATA_CHECKSUM_OFFSET                 4
 #define BDATA_MAC_ADDR_OFFSET                 8
+#define BDATA_OPFLAGS_OFFSET                 24
+#define BDATA_TXRXMASK_OFFSET                40
 
 /* Per STA data, used in AP mode */
 #define STA_PS_AWAKE		BIT(0)
@@ -306,11 +317,11 @@ struct ath6kl_android_wifi_priv_cmd {
 #define AGGR_BA_EVT_GET_CONNID(_conn)    ((_conn) >> 4)
 #define AGGR_BA_EVT_GET_TID(_tid)        ((_tid) & 0xF)
 
-#define AGGR_TX_MAX_AGGR_SIZE   1600	/* Sync to max. PDU size of host size. */
+#define AGGR_TX_MAX_AGGR_SIZE   1600	/* Sync to max. PDU size of host. */
 #define AGGR_TX_MAX_PDU_SIZE    120
-#define AGGR_TX_MIN_PDU_SIZE    64		/* 802.3(14) + LLC(8) + IP/TCP(20) = 42 */
-#define AGGR_TX_MAX_NUM			6
-#define AGGR_TX_TIMEOUT         4
+#define AGGR_TX_MIN_PDU_SIZE    64	/* 802.3(14) + LLC(8) + IP/TCP(20) = 42 */
+#define AGGR_TX_MAX_NUM		6
+#define AGGR_TX_TIMEOUT         4	/* in ms */
 
 #define AGGR_GET_TXTID(_p, _x)           (&(_p->tx_tid[(_x)]))
 
@@ -331,6 +342,14 @@ enum ps_queue_type {
 	PS_QUEUE_TYPE_STA_UNICAST,
 	PS_QUEUE_TYPE_STA_MGMT,
 	PS_QUEUE_TYPE_AP_MULTICAST,
+};
+
+/* Scanband */
+enum scanband_type {
+	SCANBAND_TYPE_ALL,		/* Scan all supported channel */
+	SCANBAND_TYPE_2G,		/* Scan 2GHz channel only */
+	SCANBAND_TYPE_5G,		/* Scan 5GHz channel only */
+	SCANBAND_TYPE_CHAN_ONLY,	/* Scan single channel only */
 };
 
 #define ATH6KL_RSN_CAP_NULLCONF		(0xffff)
@@ -411,7 +430,7 @@ struct txtid {
 	u8 amsdu_cnt;				/* current aggr count */
 	u8 *amsdu_start;			/* start pointer of amsdu frame */
 	u16 amsdu_len;				/* current aggr length */
-	u16 amsdu_lastpdu_len;		/* last PDU length */
+	u16 amsdu_lastpdu_len;			/* last PDU length */
 	spinlock_t lock;
 	struct ath6kl_vif *vif;
 
@@ -420,16 +439,21 @@ struct txtid {
 	u32 num_timeout;
 	u32 num_flush;
 	u32 num_tx_null;
+	u32 num_overflow;
 };
 
 struct aggr_info {
 	struct ath6kl_vif *vif;
 	struct sk_buff_head free_q;
 
+	/* RX */
+	u16 rx_aggr_timeout;		/* in ms */
+
 	/* TX A-MSDU */
 	bool tx_amsdu_enable;		/* IOT : treat A-MPDU & A-MSDU are exclusive. */
 	bool tx_amsdu_seq_pkt;
 	u8 tx_amsdu_max_aggr_num;
+	u32 tx_amsdu_max_aggr_len;
 	u16 tx_amsdu_max_pdu_len;
 	u16 tx_amsdu_timeout; 		/* in ms */
 };
@@ -695,6 +719,7 @@ enum ath6kl_vif_state {
 	DISCONNECT_PEND,
 	PMKLIST_GET_PEND,
 	PORT_STATUS_PEND,
+	WLAN_WOW_ENABLE,
 };
 
 struct ath6kl_vif {
@@ -756,6 +781,8 @@ struct ath6kl_vif {
 	struct wifi_diag diag;
 #endif    
 	struct p2p_ps_info *p2p_ps_info_ctx;
+	enum scanband_type scanband_type;
+	u32 scanband_chan;
 };
 
 #define WOW_LIST_ID		0
@@ -814,6 +841,7 @@ struct ath6kl {
 	u8 lrssi_roam_threshold;
 	struct ath6kl_version version;
 	u32 target_type;
+	u32 target_subtype;
 	u8 tx_pwr;
 	struct ath6kl_node_mapping node_map[MAX_NODE_NUM];
 	u8 ibss_ps_enable;
@@ -907,9 +935,9 @@ struct ath6kl {
 
 #ifdef CONFIG_ATH6KL_DEBUG
 	struct {
-		struct circ_buf fwlog_buf;
-		spinlock_t fwlog_lock;
-		void *fwlog_tmp;
+		struct sk_buff_head fwlog_queue;
+		struct completion fwlog_completion;
+		bool fwlog_open;
 		u32 fwlog_mask;
 		unsigned int dbgfs_diag_reg;
 		u32 diag_reg_addr_wr;
@@ -980,7 +1008,9 @@ struct ath6kl {
 #ifdef CONFIG_HAS_EARLYSUSPEND
     struct early_suspend early_suspend;
 #endif /* CONFIG_HAS_EARLYSUSPEND */
-
+#ifdef ATH6KL_SUPPORT_WLAN_HB
+	int wlan_hb_enable;
+#endif
 };
 
 static inline void *ath6kl_priv(struct net_device *dev)
@@ -1047,6 +1077,13 @@ bool ath6kl_mgmt_powersave_ap(struct ath6kl_vif *vif,
                                      u32 *flags);
 int ath6kl_data_tx(struct sk_buff *skb, struct net_device *dev);
 
+void aggr_tx_config(struct ath6kl_vif *vif,
+			bool tx_amsdu_seq_pkt,
+			u8 tx_amsdu_max_aggr_num,
+			u16 tx_amsdu_max_pdu_len,
+			u16 tx_amsdu_timeout);
+void aggr_config(struct ath6kl_vif *vif,
+			u16 rx_aggr_timeout);
 struct aggr_info *aggr_init(struct ath6kl_vif *vif);
 struct aggr_conn_info *aggr_init_conn(struct ath6kl_vif *vif);
 

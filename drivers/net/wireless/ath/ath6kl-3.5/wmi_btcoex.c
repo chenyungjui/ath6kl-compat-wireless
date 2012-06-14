@@ -361,6 +361,9 @@ static inline void set_default_a2dp(struct wmi_set_btcoex_a2dp_config_cmd *cmd)
 #define BTCOEX_A2DP_PKT_STOMP_CNT_QCOM_BT	2
 #define A2DP_CONFIG_ALLOW_OPTIMIZATION	(1 << 0)
 #define A2DP_CONFIG_A2DP_HIGH_PRIO	(1 << 3)
+/* set to 40 ms for a2dp max bt time.
+ * bit.24 ~ bit.31 of a2dp_flags are used for a2dp max bt duration. */
+#define BTCOEX_A2DP_BT_MAX_DUR          (40 << 24)
 static inline void set_qcom_a2dp(struct wmi_set_btcoex_a2dp_config_cmd *cmd)
 {
 	struct btcoex_a2dp_config *a2dp_config = &cmd->a2dp_config;
@@ -368,7 +371,7 @@ static inline void set_qcom_a2dp(struct wmi_set_btcoex_a2dp_config_cmd *cmd)
 	struct btcoex_a2dp_optmode_config *optmode_config =
 							&cmd->optmode_config;
 
-	a2dp_config->a2dp_flags |= cpu_to_le32(A2DP_CONFIG_ALLOW_OPTIMIZATION);
+	a2dp_config->a2dp_flags |= cpu_to_le32(BTCOEX_A2DP_BT_MAX_DUR | A2DP_CONFIG_ALLOW_OPTIMIZATION);
 
 	pspoll_config->a2dp_wlan_max_dur =
 				cpu_to_le32(BTCOEX_A2DP_WLAN_MAX_DUR_QCOM_BT);

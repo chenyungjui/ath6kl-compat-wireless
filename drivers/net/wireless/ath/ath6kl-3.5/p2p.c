@@ -676,14 +676,10 @@ void ath6kl_p2p_flowctrl_conn_list_cleanup(struct ath6kl *ar)
 	return;
 }
 
-static bool _check_can_send(struct ath6kl_p2p_flowctrl *p2p_flowctrl, 
-			    u8 connId)
+static inline bool _check_can_send(struct ath6kl_fw_conn_list *fw_conn)
 {
-	struct ath6kl_fw_conn_list *fw_conn;
         bool can_send = false;
 
-	fw_conn = &p2p_flowctrl->fw_conn_list[connId];
-	
         do {
                 if (fw_conn->ocs)
                         break;
@@ -713,7 +709,7 @@ void ath6kl_p2p_flowctrl_tx_schedule(struct ath6kl *ar)
 			continue;
 		}
 			
-		if (_check_can_send(p2p_flowctrl, i)) { 
+		if (_check_can_send(fw_conn)) { 
 			if (!list_empty(&fw_conn->re_queue)) {
 				list_for_each_entry_safe(packet, tmp_pkt, &fw_conn->re_queue, list) {
 					list_del(&packet->list);
@@ -723,7 +719,7 @@ void ath6kl_p2p_flowctrl_tx_schedule(struct ath6kl *ar)
 					if (packet->endpoint >= ENDPOINT_MAX) 
 						continue;
 
-					fw_conn->sche_re_tx++;
+					fw_conn->sche_re_tx--;
 					fw_conn->sche_tx_queued--;
 
 					ath6kl_htc_tx(ar->htc_target, packet);
@@ -779,7 +775,7 @@ int ath6kl_p2p_flowctrl_tx_schedule_pkt(struct ath6kl *ar,
 
 	spin_lock_bh(&p2p_flowctrl->p2p_flowctrl_lock);
 	fw_conn = &p2p_flowctrl->fw_conn_list[connId];
-	if (!_check_can_send(p2p_flowctrl, connId)) {
+	if (!_check_can_send(fw_conn)) {
 		list_add_tail(&cookie->htc_pkt.list, &fw_conn->conn_queue);
 		fw_conn->sche_tx_queued++;
 		spin_unlock_bh(&p2p_flowctrl->p2p_flowctrl_lock);
@@ -828,7 +824,8 @@ void ath6kl_p2p_flowctrl_state_change(struct ath6kl *ar)
 		 */
 		spin_lock_bh(&p2p_flowctrl->p2p_flowctrl_lock);
 		fw_conn = &p2p_flowctrl->fw_conn_list[i];
-		if (!_check_can_send(p2p_flowctrl, i) && fw_conn->previous_can_send) {	
+		if (!_check_can_send(fw_conn) && fw_conn->previous_can_send) {	
+			spin_lock_bh(&ar->htc_target->tx_lock);	
 			for (eid = ENDPOINT_2; eid <= ENDPOINT_5; eid++) {
 				endpoint = &ar->htc_target->endpoint[eid];
 				tx_queue = &endpoint->txq;
@@ -856,8 +853,9 @@ void ath6kl_p2p_flowctrl_state_change(struct ath6kl *ar)
 					}
 				}
 			}
+			spin_unlock_bh(&ar->htc_target->tx_lock);
 		}
-		fw_conn->previous_can_send = _check_can_send(p2p_flowctrl, i);
+		fw_conn->previous_can_send = _check_can_send(fw_conn);
 		spin_unlock_bh(&p2p_flowctrl->p2p_flowctrl_lock);
 	}
 

@@ -391,6 +391,12 @@ int ath6kl_control_tx(void *devt, struct sk_buff *skb,
 			 eid, ATH6KL_CONTROL_PKT_TAG);
 	cookie->htc_pkt.skb = skb;
 
+	/* P2P Flowctrl */
+	if (ar->conf_flags & ATH6KL_CONF_ENABLE_FLOWCTRL) {
+		cookie->htc_pkt.connid = ATH6KL_P2P_FLOWCTRL_NULL_CONNID;
+		cookie->htc_pkt.recycle_count = 0;
+	}
+
 	/*
 	 * This interface is asynchronous, if there is an error, cleanup
 	 * will happen in the TX completion callback.
@@ -1389,7 +1395,7 @@ static bool aggr_process_recv_frm(struct aggr_conn_info *aggr_conn, u8 tid,
 				aggr_conn->timer_scheduled = true;
 				mod_timer(&aggr_conn->timer,
 					  (jiffies +
-					   HZ * (AGGR_RX_TIMEOUT) / 1000));
+					   HZ * (aggr_conn->aggr_cntxt->rx_aggr_timeout) / 1000));
 				rxtid->progress = false;
 				rxtid->timer_mon = true;
 				spin_unlock_bh(&rxtid->lock);
@@ -1841,6 +1847,7 @@ static void aggr_tx_delete_tid_state(struct aggr_conn_info *aggr_conn, u8 tid)
 	txtid->num_timeout = 0;
 	txtid->num_flush = 0;
 	txtid->num_tx_null = 0;
+	txtid->num_overflow = 0;
 	spin_unlock_bh(&txtid->lock);
 
 	return;
@@ -1861,13 +1868,11 @@ static int aggr_tx(struct ath6kl_vif *vif, struct sk_buff **skb)
 	aggr = vif->aggr_cntxt;
 
 	/* 
-	 *	Only aggr IP/TCP frames, focus on small TCP-ACK frams.
-	 *  Bypass multicast and non-IP/TCP frames.
+	 * Only aggr IP/TCP frames, focus on small TCP-ACK frams.
+	 * Bypass multicast and non-IP/TCP frames.
 	 *
-	 *  Reserved 14 bytes 802.3 header ahead of A-MSDU frame for target 
-	 *  to transfer to 802.11 header.
-	 *
-	 *  TBD : Check whether skb's size is enough.
+	 * Reserved 14 bytes 802.3 header ahead of A-MSDU frame for target 
+	 * to transfer to 802.11 header.
 	 */
 	if (pdu_len > aggr->tx_amsdu_max_pdu_len)
 		return AGGR_TX_BYPASS;
@@ -1888,6 +1893,7 @@ static int aggr_tx(struct ath6kl_vif *vif, struct sk_buff **skb)
 			if (conn) {
 				struct sk_buff *amsdu_skb;
 				struct wmi_data_hdr *wmi_hdr = (struct wmi_data_hdr *)((u8 *)eth_hdr - sizeof(struct wmi_data_hdr));
+				u16 info2_tmp;
 
 				txtid = AGGR_GET_TXTID(conn->aggr_conn_cntxt, ((wmi_hdr->info >> WMI_DATA_HDR_UP_SHIFT) & WMI_DATA_HDR_UP_MASK));
 
@@ -1906,9 +1912,10 @@ static int aggr_tx(struct ath6kl_vif *vif, struct sk_buff **skb)
 					}
 
 					/* Change to A-MSDU type */
-					wmi_hdr->info2 |= (WMI_DATA_HDR_AMSDU_MASK << WMI_DATA_HDR_AMSDU_SHIFT);
-					wmi_hdr->info2 = cpu_to_le16(wmi_hdr->info2);
-
+					info2_tmp = le16_to_cpu(wmi_hdr->info2);
+					info2_tmp |= (WMI_DATA_HDR_AMSDU_MASK << WMI_DATA_HDR_AMSDU_SHIFT);
+					wmi_hdr->info2 = cpu_to_le16(info2_tmp);
+					
 					/* Clone meta-data & WMI-header. */
 					memcpy(amsdu_skb->data - hdr_len, (*skb)->data, hdr_len);
 
@@ -1920,6 +1927,18 @@ static int aggr_tx(struct ath6kl_vif *vif, struct sk_buff **skb)
 
 					/* Start tx timeout timer */
 					mod_timer(&txtid->timer, jiffies + msecs_to_jiffies(aggr->tx_amsdu_timeout));		
+				} else {
+					if ((txtid->amsdu_len + pdu_len) > aggr->tx_amsdu_max_aggr_len) {
+						txtid->num_overflow++;
+						spin_unlock_bh(&txtid->lock);
+
+						ath6kl_dbg(ATH6KL_DBG_WLAN_TX_AMSDU,
+								   "%s: AMSDU overflow, pdu_len=%d, amsdu_cnt=%d, amsdu_len=%d\n", __func__,
+								   pdu_len,
+								   txtid->amsdu_cnt, amsdu_skb->len);
+
+						return AGGR_TX_BYPASS;
+					}
 				}
 
 				/* Zero padding */
@@ -1939,6 +1958,7 @@ static int aggr_tx(struct ath6kl_vif *vif, struct sk_buff **skb)
 
 				txtid->amsdu_cnt++;
 				txtid->amsdu_lastpdu_len = pdu_len;
+				txtid->amsdu_len += subframe_len;
 
 				dev_kfree_skb(*skb);
 				*skb = NULL;
@@ -2090,6 +2110,19 @@ static int aggr_tx_tid(struct txtid *txtid, bool timer_stop)
 
 	ath6kl_dbg_dump(ATH6KL_DBG_RAW_BYTES, __func__, "aggr-tx ", skb->data, skb->len);
 
+	/* P2P Flowctrl */
+	if (ar->conf_flags & ATH6KL_CONF_ENABLE_FLOWCTRL) {
+		int ret;
+
+	        cookie->htc_pkt.connid = ath6kl_p2p_flowctrl_get_conn_id(vif, skb);
+	        cookie->htc_pkt.recycle_count = 0;
+		ret = ath6kl_p2p_flowctrl_tx_schedule_pkt(ar, (void *)cookie);
+		if (ret == 0)		/* Queue it */
+			return 0;
+		else if (ret < 0)	/* Error, drop it. */
+			goto fail_tx;
+	}
+
 	/*
 	 * HTC interface is asynchronous, if this fails, cleanup will
 	 * happen in the ath6kl_tx_complete callback.
@@ -2187,7 +2220,7 @@ static void aggr_timeout(unsigned long arg)
 
 	if (aggr_conn->timer_scheduled)
 		mod_timer(&aggr_conn->timer,
-			  jiffies + msecs_to_jiffies(AGGR_RX_TIMEOUT));
+			  jiffies + msecs_to_jiffies(aggr_conn->aggr_cntxt->rx_aggr_timeout));
 }
 
 static void aggr_delete_tid_state(struct aggr_conn_info *aggr_conn, u8 tid)
@@ -2315,6 +2348,63 @@ void aggr_recv_addba_resp_evt(struct ath6kl_vif *vif, u8 tid, u16 amsdu_sz, u8 s
 	}
 }
 
+void aggr_tx_config(struct ath6kl_vif *vif,
+			bool tx_amsdu_seq_pkt,
+			u8 tx_amsdu_max_aggr_num,
+			u16 tx_amsdu_max_pdu_len,
+			u16 tx_amsdu_timeout)
+{
+	if ((vif) &&
+	    (vif->aggr_cntxt)) {
+		struct aggr_info *aggr = vif->aggr_cntxt;
+
+		aggr->tx_amsdu_seq_pkt = tx_amsdu_seq_pkt;
+
+		if (tx_amsdu_timeout == 0) 
+			tx_amsdu_timeout = AGGR_TX_TIMEOUT;
+		aggr->tx_amsdu_timeout = tx_amsdu_timeout;
+
+		if (tx_amsdu_max_pdu_len == 0) 
+			tx_amsdu_max_pdu_len = AGGR_TX_MAX_PDU_SIZE;
+		else if (tx_amsdu_max_pdu_len < AGGR_TX_MIN_PDU_SIZE)
+			tx_amsdu_max_pdu_len = AGGR_TX_MIN_PDU_SIZE;
+		if (tx_amsdu_max_pdu_len > (aggr->tx_amsdu_max_aggr_len / 2))
+			tx_amsdu_max_pdu_len = (aggr->tx_amsdu_max_aggr_len / 2);
+		aggr->tx_amsdu_max_pdu_len = tx_amsdu_max_pdu_len;
+
+		if (tx_amsdu_max_aggr_num == 0) 
+			tx_amsdu_max_aggr_num = AGGR_TX_MAX_NUM;
+		else if (tx_amsdu_max_aggr_num < 2)
+			tx_amsdu_max_aggr_num = 2;
+		aggr->tx_amsdu_max_aggr_num = tx_amsdu_max_aggr_num;
+
+		ath6kl_dbg(ATH6KL_DBG_WLAN_TX_AMSDU,
+			   "%s: aggr. config, vif_ifx=%d, tx_amsdu_max_pdu_len=%d, tx_amsdu_max_aggr_num=%d tx_amsdu_timeout=%d, tx_amsdu_seq_pkt=%d\n", __func__,
+			   vif->fw_vif_idx,
+			   aggr->tx_amsdu_max_pdu_len,
+			   aggr->tx_amsdu_max_aggr_num,
+			   aggr->tx_amsdu_timeout,
+			   aggr->tx_amsdu_seq_pkt);
+	}
+
+	return;
+}
+
+void aggr_config(struct ath6kl_vif *vif,
+			u16 rx_aggr_timeout)
+{
+	if ((vif) &&
+	    (vif->aggr_cntxt)) {
+		struct aggr_info *aggr = vif->aggr_cntxt;
+
+		if (rx_aggr_timeout == 0) 
+			rx_aggr_timeout = AGGR_RX_TIMEOUT;
+		aggr->rx_aggr_timeout = rx_aggr_timeout;
+	}
+
+	return;
+}
+
 struct aggr_info *aggr_init(struct ath6kl_vif *vif)
 {
 	struct aggr_info *aggr = NULL;
@@ -2329,10 +2419,12 @@ struct aggr_info *aggr_init(struct ath6kl_vif *vif)
 
 	skb_queue_head_init(&aggr->free_q);
 	ath6kl_alloc_netbufs(&aggr->free_q, AGGR_NUM_OF_FREE_NETBUFS);
+	aggr->rx_aggr_timeout = AGGR_RX_TIMEOUT;
 
 	aggr->tx_amsdu_enable = true;
 	aggr->tx_amsdu_seq_pkt = true;
 	aggr->tx_amsdu_max_aggr_num = AGGR_TX_MAX_NUM;
+	aggr->tx_amsdu_max_aggr_len = AGGR_TX_MAX_AGGR_SIZE - 100;
 	aggr->tx_amsdu_max_pdu_len = AGGR_TX_MAX_PDU_SIZE;
 	aggr->tx_amsdu_timeout = AGGR_TX_TIMEOUT;
 

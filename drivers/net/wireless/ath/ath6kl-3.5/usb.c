@@ -1872,6 +1872,29 @@ static void ath6kl_usb_remove(struct usb_interface *interface)
 
 #ifdef CONFIG_PM
 
+#ifdef CONFIG_ANDROID
+static int ath6kl_usb_pm_suspend(struct usb_interface *interface,
+			      pm_message_t message)
+{
+	struct ath6kl_usb *device;
+	struct ath6kl *ar;
+	struct ath6kl_vif *vif;
+	
+	device = (struct ath6kl_usb *)usb_get_intfdata(interface);
+	ar = device->ar;
+
+	vif = ath6kl_vif_first(ar);
+	
+	if(test_bit(WLAN_WOW_ENABLE, &vif->flags)) {
+		ath6kl_cfg80211_suspend(ar, ATH6KL_CFG_SUSPEND_WOW, NULL);
+	}else{
+		ath6kl_cfg80211_suspend(ar, ATH6KL_CFG_SUSPEND_DEEPSLEEP, NULL);
+	}
+
+	ath6kl_usb_flush_all(device);
+	return 0;
+}
+#else
 static int ath6kl_usb_pm_suspend(struct usb_interface *interface,
 			      pm_message_t message)
 {
@@ -1888,6 +1911,8 @@ static int ath6kl_usb_pm_suspend(struct usb_interface *interface,
 	ath6kl_usb_flush_all(device);
 	return 0;
 }
+#endif
+
 
 static int ath6kl_usb_pm_resume(struct usb_interface *interface)
 {
